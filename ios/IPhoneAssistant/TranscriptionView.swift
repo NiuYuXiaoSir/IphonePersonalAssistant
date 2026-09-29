@@ -65,12 +65,12 @@ struct TranscriptionView: View {
         Section {
             Toggle("只用端上识别（不上传录音）", isOn: $useOnDevice)
             LabeledContent("本机支持端上中文识别",
-                           value: TranscriptionService.supportsOnDevice() ? "是" : "否")}
+                           value: TranscriptionService.supportsOnDevice() ? "是" : "否")
         } header: {
             Text("模式")
         } footer: {
             Text("端上识别不联网、录音不出手机，但准确率可能不如联网识别。关掉这个开关会走 Apple 的服务器，录音会被上传。")
-        )
+        }
     }
 
     private func singleSection(_ m: Meeting) -> some View {
@@ -94,7 +94,7 @@ struct TranscriptionView: View {
         } header: {
             Text("全部转写")
         } footer: {
-            Text("每转完一段就立即存一次。中途失败也不会丢掉已经转好的部分，重新点会从头再接上。")
+            Text("每转完一段就立即存一次。中途失败也不会丢掉已经转好的部分。")
         }
     }
 
@@ -123,12 +123,12 @@ struct TranscriptionView: View {
         busy = true
         report = ""
         progress = "正在转写 \(first.fileName)…"
+        let onDevice = useOnDevice
 
         Task {
-            defer { }
             do {
                 let url = MeetingStore.recordingsDirectory().appendingPathComponent(first.fileName)
-                let text = try await TranscriptionService.recognize(url: url, onDevice: useOnDevice)
+                let text = try await TranscriptionService.recognize(url: url, onDevice: onDevice)
                 await MainActor.run {
                     self.busy = false
                     self.progress = ""
@@ -166,9 +166,9 @@ struct TranscriptionView: View {
                         pieces.append(text)
                     }
                     // 逐段增量保存：中途出错也不会丢掉已经转好的部分
+                    let joined = pieces.joined(separator: "\n")
                     await MainActor.run {
-                        self.saveTranscript(pieces.joined(separator: "\n"))
-                        self.preview = self.preview.isEmpty ? pieces.joined(separator: "\n") : self.preview
+                        self.saveTranscript(joined)
                     }
                 } catch {
                     failures.append("第 \(index + 1) 段：\(error.localizedDescription)")
@@ -201,6 +201,7 @@ struct TranscriptionView: View {
             m.status = "transcribed"
         }
         store.update(m)
+        preview = text
     }
 }
 

@@ -53,8 +53,9 @@ struct MeetingDetailView: View {
             if let m = meeting {
                 summarySection(m)
                 audioSection(m)
-                aiSection(m)
                 textSection
+                transcribeSection(m)
+                aiSection(m)
                 exportSection(m)
             } else {
                 Text("记录不存在，可能已被删除").foregroundStyle(.secondary)
@@ -126,26 +127,6 @@ struct MeetingDetailView: View {
         }
     }
 
-    private func aiSection(_ m: Meeting) -> some View {
-        Section {
-            NavigationLink {
-                MeetingSummaryView(meetingID: meetingID)
-            } label: {
-                Label("AI 纪要", systemImage: "wand.and.stars")
-                    .font(.headline)
-            }
-            if !m.summaryJSON.isEmpty {
-                Text("已生成纪要（\(m.summaryJSON.count) 字符）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("AI 纪要")
-        } footer: {
-            Text("基于上一节的会议文字生成摘要、决议、待办和日程，确认后可直接写进提醒事项和日历。")
-        }
-    }
-
     private var textSection: some View {
         Section {
             TextEditor(text: $transcriptDraft)
@@ -158,7 +139,38 @@ struct MeetingDetailView: View {
         } header: {
             Text("会议文字")
         } footer: {
-            Text("语音自动转写还没做（下一轮）。现在可以手动把会议记录、聊天记录或你自己的笔记粘到这里，AI 纪要和待办就基于这段文字生成。")
+            Text("可以自动转写（下面），也可以手动粘会议记录、聊天记录或你自己的笔记。")
+        }
+    }
+
+    private func transcribeSection(_ m: Meeting) -> some View {
+        Section {
+            NavigationLink {
+                TranscriptionView(meetingID: meetingID)
+            } label: {
+                Label("自动转写录音", systemImage: "text.bubble")
+            }
+        } footer: {
+            Text("把上面 \(m.segments.count) 段录音逐段转成文字。建议先在里面点「只转写第 1 段」验证能不能用。")
+        }
+    }
+
+    private func aiSection(_ m: Meeting) -> some View {
+        Section {
+            NavigationLink {
+                MeetingSummaryView(meetingID: meetingID)
+            } label: {
+                Label("AI 纪要", systemImage: "wand.and.stars")
+                    .font(.headline)
+            }
+        } header: {
+            Text("AI 纪要")
+        } footer: {
+            if m.summaryJSON.isEmpty {
+                Text("基于会议文字生成摘要、决议、待办和日程，确认后可直接写进提醒事项和日历。")
+            } else {
+                Text("已生成过纪要（\(m.summaryJSON.count) 字符），点进去可以重看或重新生成。")
+            }
         }
     }
 
