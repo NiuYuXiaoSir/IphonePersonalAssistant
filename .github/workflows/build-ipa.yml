@@ -1,9 +1,9 @@
 ## 在 GitHub 的 macOS runner 上编译出未签名的 ipa。
-## 签名由手机端的侧载工具（AltStore / SideStore / Sideloadly）用你的免费 Apple ID 完成。
+## 签名由电脑端的侧载工具（Sideloadly / AltStore）用免费 Apple ID 完成。
 ##
 ## 这是本项目唯一的构建通道（没有 Mac），所以做了两件事来弥补迭代速度：
-##   1. 每次 push 自动构建，并把产物发布到一个**固定 URL**，手机浏览器直接可下
-##   2. 同时保留 Actions artifact，作为备份
+##   1. 每次 push 自动构建，产物发布到固定 URL
+##   2. 把 SHA256 写进 Release 说明，下载后可校验完整性
 
 name: Build unsigned IPA
 
@@ -87,24 +87,30 @@ jobs:
           path: IPhoneAssistant-unsigned.ipa
           retention-days: 30
 
-      - name: 发布到 latest Release（手机可直接下载）
+      - name: 发布到 latest Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # 固定用 latest 这个 tag，保证下载 URL 永远不变，可以存成手机书签
+          # 每次都把当前文件的 SHA256 写进 Release 说明，方便下载后校验没被篡改
+          SHA=$(shasum -a 256 IPhoneAssistant-unsigned.ipa | awk '{print $1}')
+          NOTES=$(printf '每次 push 自动更新。\n\n**在电脑上下载**（Sideloadly 通过数据线装机，手机不需要联网下载）。\n\n下载后校验完整性：\n```\ncertutil -hashfile IPhoneAssistant-unsigned.ipa SHA256\n```\nSHA256: `%s`' "$SHA")
+
+          # 固定用 latest 这个 tag，保证下载 URL 永远不变
           gh release view latest >/dev/null 2>&1 || \
-            gh release create latest \
-              --title "最新构建" \
-              --notes "每次 push 自动更新。在手机浏览器打开下载链接下载 ipa，再用 AltStore / Sideloadly 安装。"
+            gh release create latest --title "最新构建" --notes "初始化"
           gh release upload latest IPhoneAssistant-unsigned.ipa --clobber
+          gh release edit latest --notes "$NOTES"
 
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/IPhoneAssistant-unsigned.ipa"
           {
-            echo "### 📱 手机下载地址（存成书签，每次构建后可直接重下）"
+            echo "### 📦 下载地址"
             echo ""
             echo "$URL"
+            echo ""
+            echo "SHA256: \`$SHA\`"
             echo ""
             echo "构建 #${GITHUB_RUN_NUMBER} · 提交 \`${GITHUB_SHA:0:7}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "下载地址: $URL"
+          echo "SHA256: $SHA"

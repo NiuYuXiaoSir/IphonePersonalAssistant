@@ -7,21 +7,31 @@
 因为手头没有 Mac，iOS App 的编译只能放在云端做。这个仓库承担两件事：
 
 1. **构建**：GitHub Actions 的 macOS runner 把 Swift 代码编译成**未签名**的 ipa
-2. **分发**：产物自动发布到固定的 `latest` Release，手机浏览器打开链接即可下载
+2. **分发**：产物自动发布到固定的 `latest` Release，浏览器打开链接即可下载
 
-签名和安装由手机端的侧载工具（Sideloadly / AltStore）用免费 Apple ID 完成。
+签名和安装由电脑端的侧载工具（Sideloadly / AltStore）用免费 Apple ID 完成。
 
 ```
-push 代码 → CI 编译（约 3-4 分钟）→ 发布到 latest → 手机下载 ipa → 侧载安装
+push 代码 → CI 编译（约 1 分钟）→ 发布到 latest → 下载 ipa → 侧载安装
 ```
 
-## 手机下载地址
+## 下载安装包
 
 ```
 https://github.com/NiuYuXiaoSir/IphonePersonalAssistant/releases/download/latest/IPhoneAssistant-unsigned.ipa
 ```
 
-**存成手机浏览器书签。** 每次改动推送后等几分钟，点一下书签就能拿到最新安装包。
+**在电脑上下载。** 用 Sideloadly 装机时，ipa 全程留在电脑上、通过数据线推进手机，手机不需要联网下载任何东西。每次改动推送后约一分钟即可重新下载。
+
+下载后校验完整性：
+
+```
+certutil -hashfile IPhoneAssistant-unsigned.ipa SHA256
+```
+
+当前构建的 SHA256 写在 Release 页面的说明里。
+
+> 下载会跳转到 `objects.githubusercontent.com` / `release-assets.githubusercontent.com`，这两个域名在国内的代理规则模式下容易被漏掉。如果 `github.com` 打得开但下载卡住，八成卡在这里，切成全局模式下载十几秒即可。
 
 ## 当前阶段：E1 探针
 
@@ -50,7 +60,7 @@ ios/IPhoneAssistant/              探针源码
 
 ## 本地（Windows）怎么改
 
-改完 `ios/` 下的文件，commit + push 即可，剩下交给 CI。本地没有编译器，所以：
+改完 `ios/` 下的文件，push 即可，剩下交给 CI。本地没有编译器，所以：
 
 - **一次 push 只改一件事**，方便定位问题
 - 纯逻辑（prompt、JSON 解析、时间解析）尽量先抽成不依赖 iOS 的模块，将来可以在 Windows 上单独验证
