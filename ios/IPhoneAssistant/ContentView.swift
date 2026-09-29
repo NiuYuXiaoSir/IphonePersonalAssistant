@@ -1,6 +1,8 @@
 import SwiftUI
 
-struct ContentView: View {
+/// 诊断页：原本的 E1 探针界面。特意保留，因为它还要继续用——
+/// 7 天续签后的数据保留验证、后台录音复测、App Groups 复测都依赖它。
+struct DiagnosticsView: View {
     @StateObject private var store = ProbeStore()
 
     var body: some View {
@@ -13,7 +15,7 @@ struct ContentView: View {
                 notificationSection
                 reportSection
             }
-            .navigationTitle("E1 探针")
+            .navigationTitle("诊断")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { store.refreshInstallInfo() }
             .alert("提示", isPresented: Binding(
@@ -81,7 +83,7 @@ struct ContentView: View {
         } header: {
             Text("③ 麦克风与后台录音")
         } footer: {
-            Text("测法：开始录音后立刻锁屏 2 分钟以上，回来停止。如果文件大小和时长对得上，说明后台录音可用——这是整个产品的前提。")
+            Text("测法：开始录音后立刻锁屏，等 2 分钟以上再回来停止。判定看「实际流逝」和「文件实际音频」两个数字是否吻合。")
         }
     }
 
@@ -136,5 +138,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    DiagnosticsView()
 }

@@ -4,7 +4,7 @@ import SwiftUI
 struct IPhoneAssistantApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
         }
     }
 }
