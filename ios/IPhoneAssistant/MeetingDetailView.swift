@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 /// 极简播放器，用来试听某个录音段。
 /// 它的另一个作用是一一能播出来，就说明这个文件是完整的，这是验证分段录制有没有坏掉的最快方法。
@@ -129,7 +130,7 @@ struct MeetingDetailView: View {
         } header: {
             Text("会议文字")
         } footer: {
-            Text("语音自动转写还没做（下一轮）。现在可以手动粘会议记录、聊天记录或你自己的笔记到这里，后面的 AI 纪要和待办就基于这段文字生成。")
+            Text("语音自动转写还没做（下一轮）。现在可以手动把会议记录、聊天记录或你自己的笔记粘到这里，后续的 AI 纪要和待办就基于这段文字生成。")
         }
     }
 
@@ -174,7 +175,7 @@ struct MeetingDetailView: View {
         }
         store.update(m)
         message = "已保存 \(m.transcript.count) 字"
-        AppLog.info("Meeting", "保存文字 \(m.transcript.count) 字")在
+        AppLog.info("Meeting", "保存文字 \(m.transcript.count) 字")
     }
 
     private func markdown(_ m: Meeting) -> String {
