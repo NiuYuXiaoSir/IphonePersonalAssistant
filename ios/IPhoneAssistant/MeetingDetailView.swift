@@ -53,8 +53,8 @@ struct MeetingDetailView: View {
             if let m = meeting {
                 summarySection(m)
                 audioSection(m)
+                aiSection(m)
                 textSection
-                if !m.summaryJSON.isEmpty { aiSection(m) }
                 exportSection(m)
             } else {
                 Text("记录不存在，可能已被删除").foregroundStyle(.secondary)
@@ -89,7 +89,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    /// markers 是 [Double]，浮点数不能用 % 取模，必须用 truncatingRemainder
+    /// markers 是 [Double]，浮点数不能用 % 取模，所以先转成 Int
     private func markerText(_ markers: [Double]) -> String {
         markers.map { seconds in
             let total = Int(seconds)
@@ -126,6 +126,26 @@ struct MeetingDetailView: View {
         }
     }
 
+    private func aiSection(_ m: Meeting) -> some View {
+        Section {
+            NavigationLink {
+                MeetingSummaryView(meetingID: meetingID)
+            } label: {
+                Label("AI 纪要", systemImage: "wand.and.stars")
+                    .font(.headline)
+            }
+            if !m.summaryJSON.isEmpty {
+                Text("已生成纪要（\(m.summaryJSON.count) 字符）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("AI 纪要")
+        } footer: {
+            Text("基于上一节的会议文字生成摘要、决议、待办和日程，确认后可直接写进提醒事项和日历。")
+        }
+    }
+
     private var textSection: some View {
         Section {
             TextEditor(text: $transcriptDraft)
@@ -138,15 +158,7 @@ struct MeetingDetailView: View {
         } header: {
             Text("会议文字")
         } footer: {
-            Text("语音自动转写还没做（下一轮）。现在可以手动把会议记录、聊天记录或你自己的笔记粘到这里，后续的 AI 纪要和待办就基于这段文字生成。")
-        }
-    }
-
-    private func aiSection(_ m: Meeting) -> some View {
-        Section("AI 纪要") {
-            Text(m.summaryJSON)
-                .font(.system(.caption2, design: .monospaced))
-                .textSelection(.enabled)
+            Text("语音自动转写还没做（下一轮）。现在可以手动把会议记录、聊天记录或你自己的笔记粘到这里，AI 纪要和待办就基于这段文字生成。")
         }
     }
 

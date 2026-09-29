@@ -50,31 +50,10 @@ struct MeetingSummaryView: View {
 
     var body: some View {
         List {
-            guard let m = meeting else {
-                Text("记录不存在，可能已被删除").foregroundStyle(.secondary)
-                return
-            }
-
-            if m.transcript.isEmpty {
-                Section {
-                    Label("先去上一页把会议文字粘进去", systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                }
+            if let m = meeting {
+                topContent(m)
             } else {
-                generateSection(m)
-            }
-
-            if hasSummary {
-                headerSection
-                if !summary.summaryText.isEmpty { abstractSection }
-                if !summary.topics.isEmpty { topicsSection }
-                if !summary.decisions.isEmpty { decisionsSection }
-                if !summary.actionItems.isEmpty { actionSection }
-                if !summary.events.isEmpty { eventsSection }
-                if !summary.keyPoints.isEmpty { keyPointsSection }
-                if !summary.unresolved.isEmpty { unresolvedSection }
-                writeSection
+                Text("记录不存在，可能已被删除").foregroundStyle(.secondary)
             }
 
             if !status.isEmpty {
@@ -90,20 +69,52 @@ struct MeetingSummaryView: View {
         .onAppear(perform: loadExisting)
     }
 
-    // MARK: - 区块
+    // MARK: - 主体
+
+    @ViewBuilder
+    private func topContent(_ m: Meeting) -> some View {
+        if m.transcript.isEmpty {
+            Section {
+                Label("先去上一页把会议文字粘进去", systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
+        } else {
+            generateSection(m)
+        }
+
+        if hasSummary {
+            headerSection
+            summaryBody
+            writeSection
+        }
+    }
+
+    @ViewBuilder
+    private var summaryBody: some View {
+        if !summary.summaryText.isEmpty { abstractSection }
+        if !summary.topics.isEmpty { topicsSection }
+        if !summary.decisions.isEmpty { decisionsSection }
+        if !summary.actionItems.isEmpty { actionSection }
+        if !summary.events.isEmpty { eventsSection }
+        if !summary.keyPoints.isEmpty { keyPointsSection }
+        if !summary.unresolved.isEmpty { unresolvedSection }
+    }
+
+    // MARK: - 各区块
 
     private func generateSection(_ m: Meeting) -> some View {
         Section {
             LabeledContent("会议文字", value: "\(m.transcript.count) 字")
             LabeledContent("模型", value: settings.model)
-            Button(busy ? "生成中…（长会议可能要等 30 秒）" : (hasSummary ? "重新生成纪要" : "生成 AI 纪要")) {
+            Button(busy ? "生成中…（长会议可能要等半分钟）" : (hasSummary ? "重新生成纪要" : "生成 AI 纪要")) {
                 generate(m)
             }
             .disabled(busy)
         } header: {
             Text("生成")
         } footer: {
-            Text("会真的向模型发一次请求。提醒：待办必须能在原文里找到依据，模型被要求在每条待办里附上原文句子，方便你核对。")
+            Text("会真的向模型发一次请求。每条待办都被要求附上原文句子，方便你核对是不是模型编的。")
         }
     }
 
@@ -111,10 +122,8 @@ struct MeetingSummaryView: View {
         Section("标题建议") {
             Text(summary.titleDraft.isEmpty ? "（模型没给建议）" : summary.titleDraft)
                 .font(.headline)
-            Button("用它作为会议标题") {
-                applyTitle()
-            }
-            .disabled(summary.titleDraft.isEmpty)
+            Button("用它作为会议标题") { applyTitle() }
+                .disabled(summary.titleDraft.isEmpty)
         }
     }
 
@@ -260,12 +269,13 @@ struct MeetingSummaryView: View {
                 let parsed = try MeetingSummarizer.decode(raw)
                 await MainActor.run {
                     self.busy = false
-                    guard var updated = self.store.meeting(id: self.meetingID) else { return }
-                    updated.summaryJSON = raw
-                    if updated.status == "recorded" || updated.status == "transcribed" {
-                        updated.status = "summarized"
+                    if var updated = self.store.meeting(id: self.meetingID) {
+                        updated.summaryJSON = raw
+                        if updated.status == "recorded" || updated.status == "transcribed" {
+                            updated.status = "summarized"
+                        }
+                        self.store.update(updated)
                     }
-                    self.store.update(updated)
                     self.summary = parsed
                     self.hasSummary = true
                     self.status = "生成完成：待办 \(parsed.actionItems.count) 条，日程 \(parsed.events.count) 条，决议 \(parsed.decisions.count) 条"
