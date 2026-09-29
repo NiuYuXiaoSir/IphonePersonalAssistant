@@ -35,9 +35,13 @@ struct MeetingsView: View {
                             }
                         }
                         .onDelete { offsets in
-                            for index in offsets {
-                                guard index < store.meetings.count else { continue }
-                                store.delete(store.meetings[index])
+                            // 先收集再删除：直接边删边按旧下标取会错位
+                            let doomed = offsets.compactMap { index -> Meeting? in
+                                guard index < store.meetings.count else { return nil }
+                                return store.meetings[index]
+                            }
+                            for meeting in doomed {
+                                store.delete(meeting)
                             }
                         }
                     }

@@ -2,7 +2,7 @@
 ## 签名由电脑端的侧载工具（Sideloadly / AltStore）用免费 Apple ID 完成。
 ##
 ## 本项目没有 Mac，所以这个流水线额外承担了“报错回传”的职责：
-## 编译失败时把编译器错误写成 ci/build-error.log 提交回仓库，
+## 编译失败时把编译器诊断写成 ci/build-error.log 提交回仓库，
 ## 这样在本地就能读到错误（GitHub Actions 的日志需要登录才能看）。
 
 name: Build unsigned IPA
@@ -66,7 +66,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee ../build.log
 
-      - name: 编译失败时就地记录错误
+      - name: 编译失败时就地记录诊断
         if: steps.compile.outcome == 'failure'
         run: |
           mkdir -p ci
@@ -77,14 +77,19 @@ jobs:
             echo "- 提交: $GITHUB_SHA"
             echo "- 时间: $(date -u +%FT%TZ)"
             echo ""
-            echo "## 编译器错误"
+            echo "## Swift 诊断（错误/警告）"
             echo '```'
-            grep -n -E "error:" build.log | head -80 || echo "(没搜到 error: 行，看下面的日志尾部)"
+            grep -E "\.swift:[0-9]+:[0-9]+: (error|warning):" build.log | head -60 || echo "(没有 Swift 诊断行)"
             echo '```'
             echo ""
-            echo "## 日志尾部"
+            echo "## 失败的任务"
             echo '```'
-            tail -80 build.log
+            sed -n '/The following build commands failed/,+8p' build.log | head -12
+            echo '```'
+            echo ""
+            echo "## 其他错误行"
+            echo '```'
+            grep -E "^(error|Error|fatal|Fatal)|\.h:[0-9]+:[0-9]+: error:" build.log | head -20 || true
             echo '```'
           } > ci/build-error.log
 

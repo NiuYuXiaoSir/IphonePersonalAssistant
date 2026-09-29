@@ -81,12 +81,20 @@ struct MeetingDetailView: View {
             LabeledContent("时长", value: RecordingService.durationText(m.durationSeconds))
             LabeledContent("录音段数", value: "\(m.segments.count)")
             if !m.markers.isEmpty {
-                LabeledContent("标记点", value: m.markers.map { "\(Int($0 / 60))分\(Int($0 % 60))秒" }.joined(separator: "、"))
+                LabeledContent("标记点", value: markerText(m.markers))
             }
             LabeledContent("状态", value: m.status)
             TextField("标题", text: $titleDraft)
                 .onSubmit { renameMeeting() }
         }
+    }
+
+    /// markers 是 [Double]，浮点数不能用 % 取模，必须用 truncatingRemainder
+    private func markerText(_ markers: [Double]) -> String {
+        markers.map { seconds in
+            let total = Int(seconds)
+            return "\(total / 60)分\(total % 60)秒"
+        }.joined(separator: "、")
     }
 
     private func audioSection(_ m: Meeting) -> some View {
