@@ -1,0 +1,14 @@
+# XcodeGen 生成的工程，不入库
+ios/IPhoneAssistant.xcodeproj/
+ios/IPhoneAssistant/Info.plist
+ios/build/
+ios/*.xcworkspace/
+
+# 构建产物
+Payload/
+*.ipa
+*.app
+DerivedData/
+
+# macOS
+.DS_Store

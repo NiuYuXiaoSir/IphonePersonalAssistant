@@ -1,0 +1,110 @@
+## 在 GitHub 的 macOS runner 上编译出未签名的 ipa。
+## 签名由手机端的侧载工具（AltStore / SideStore / Sideloadly）用你的免费 Apple ID 完成。
+##
+## 这是本项目唯一的构建通道（没有 Mac），所以做了两件事来弥补迭代速度：
+##   1. 每次 push 自动构建，并把产物发布到一个**固定 URL**，手机浏览器直接可下
+##   2. 同时保留 Actions artifact，作为备份
+
+name: Build unsigned IPA
+
+on:
+  push:
+    # 只有代码或构建配置变了才构建（改文档不触发，省额度）
+    paths:
+      - "ios/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+# 连续 push 时，自动取消上一次还没跑完的构建，只保留最新一次
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 需要写权限才能创建/更新 Release
+permissions:
+  contents: write
+
+env:
+  # 跳过 Homebrew 的自动更新检查，能省下 1 分钟
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 选用最新可用的 Xcode
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "使用: $NEWEST"
+          sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: 编译（无签名）
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project IPhoneAssistant.xcodeproj \
+            -scheme IPhoneAssistant \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: 打包成 ipa
+        run: |
+          set -euo pipefail
+          APP=$(find ios/build/Build/Products -maxdepth 3 -name "IPhoneAssistant.app" | head -1)
+          echo "产物: $APP"
+          if [ -z "$APP" ]; then echo "没找到 .app，编译可能失败了"; exit 1; fi
+          rm -rf Payload IPhoneAssistant-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry -X IPhoneAssistant-unsigned.ipa Payload
+          ls -lh IPhoneAssistant-unsigned.ipa
+
+      - name: 备份到 Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPhoneAssistant-unsigned-ipa
+          path: IPhoneAssistant-unsigned.ipa
+          retention-days: 30
+
+      - name: 发布到 latest Release（手机可直接下载）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 固定用 latest 这个 tag，保证下载 URL 永远不变，可以存成手机书签
+          gh release view latest >/dev/null 2>&1 || \
+            gh release create latest \
+              --title "最新构建" \
+              --notes "每次 push 自动更新。在手机浏览器打开下载链接下载 ipa，再用 AltStore / Sideloadly 安装。"
+          gh release upload latest IPhoneAssistant-unsigned.ipa --clobber
+
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/IPhoneAssistant-unsigned.ipa"
+          {
+            echo "### 📱 手机下载地址（存成书签，每次构建后可直接重下）"
+            echo ""
+            echo "$URL"
+            echo ""
+            echo "构建 #${GITHUB_RUN_NUMBER} · 提交 \`${GITHUB_SHA:0:7}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "下载地址: $URL"
