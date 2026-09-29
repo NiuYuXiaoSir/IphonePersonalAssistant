@@ -105,7 +105,7 @@ final class ProbeStore: ObservableObject {
         名称: \(name)
         TeamID: \(team)
         过期: \(expiryText)
-        App Groups: \(appGroups.isEmpty ? "无（小组件共享数据需要它）" : appGroups.joined(separator: ", "))
+        App Groups: \(appGroups.isEmpty ? "无（注意：这只说明本次签名没有请求它，不等于免费账号不支持）" : appGroups.joined(separator: ", "))
         Entitlements: \(entKeys.isEmpty ? "无" : entKeys)
         """
     }
@@ -157,7 +157,7 @@ final class ProbeStore: ObservableObject {
             recordStart = Date()
             recordSeconds = 0
             isRecording = true
-            recordStatus = "🔴 录音中…现在请锁屏、切到别的 App、或息屏至少 2 分钟，测试后台录音是否还在继续"
+            recordStatus = "🔴 录音中…现在请锁屏（或息屏），等 2 分钟以上再回来停止。这一步是在测后台录音，是整个产品的前提。"
 
             recordTimer?.invalidate()
             recordTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -172,7 +172,9 @@ final class ProbeStore: ObservableObject {
     func stopRecording() {
         recordTimer?.invalidate()
         recordTimer = nil
-        let seconds = recordSeconds
+        // 用录音器自己记的时长，而不是界面计时器——App 在后台时计时器可能被系统节流
+        let audioSeconds = recorder?.currentTime ?? 0
+        let wallSeconds = recordStart.map { Date().timeIntervalSince($0) } ?? audioSeconds
         recorder?.stop()
         recorder = nil
         isRecording = false
@@ -182,23 +184,36 @@ final class ProbeStore: ObservableObject {
             recordStatus = "❌ 没有正在录制的文件"
             return
         }
+        // 文件里实际存了多少秒音频——这是最权威的数字
+        let fileSeconds = Self.audioDuration(of: url)
         var bytes = 0
         if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
            let n = attrs[.size] as? Int {
             bytes = n
         }
         let mb = Double(bytes) / 1024.0 / 1024.0
-        // 期望值参考：64kbps 单声道 AAC 约 8KB/秒。如果实际远小于这个，说明后台被系统掐了。
-        let expectedMB = seconds * 8.0 / 1024.0
+
+        // 判定逻辑：比较「真实流逝的时间」和「文件里实际存下来的音频长度」。
+        // 如果后台录音被系统掐断，文件会明显短于流逝时间。
         var verdict = ""
-        if seconds > 30 {
-            if mb < expectedMB * 0.5 {
-                verdict = "\n⚠️ 文件明显偏小（期望约 \(String(format: "%.2f", expectedMB)) MB），后台录音可能被中断了"
+        if wallSeconds < 25 {
+            verdict = "\n⚠️ 录制时间太短，无法判断后台录音。请重新测：开始后立刻锁屏，等 2 分钟以上再回来停止。"
+        } else {
+            let lost = wallSeconds - fileSeconds
+            if lost > 5 {
+                verdict = "\n❌ 后台录音被中断了：实际过去 \(Int(wallSeconds)) 秒，文件里只有 \(Int(fileSeconds)) 秒，丢了约 \(Int(lost)) 秒"
             } else {
-                verdict = "\n✅ 文件大小符合预期，后台录音没有被掐"
+                verdict = "\n✅ 后台录音正常：实际过去 \(Int(wallSeconds)) 秒，文件里 \(Int(fileSeconds)) 秒，基本吻合"
             }
         }
-        recordStatus = String(format: "✅ 已录 %.1f 秒，文件 %.2f MB\n%@%@", seconds, mb, url.lastPathComponent, verdict)
+
+        recordStatus = """
+        \(url.lastPathComponent)
+        实际流逝: \(String(format: "%.1f", wallSeconds)) 秒
+        录音器计时: \(String(format: "%.1f", audioSeconds)) 秒
+        文件实际音频: \(String(format: "%.1f", fileSeconds)) 秒
+        文件大小: \(String(format: "%.2f", mb)) MB\(verdict)
+        """
         loadRecordings()
     }
 
@@ -216,7 +231,11 @@ final class ProbeStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard granted else {
-                    self.calendarStatus = "❌ 日历权限被拒绝 / 出错：\(error?.localizedDescription ?? "无错误信息")"
+                    let status = EKEventStore.authorizationStatus(for: .event).rawValue
+                    self.calendarStatus = """
+                    ❌ 日历权限被拒绝（系统状态码 \(status)，错误：\(error?.localizedDescription ?? "无")）
+                    去 设置 → 隐私与安全性 → 日历 → 打开「助理探针」的开关，然后重新点这个测试。
+                    """
                     return
                 }
                 let cal = Calendar.current
@@ -442,6 +461,12 @@ final class ProbeStore: ObservableObject {
         let f = DateFormatter()
         f.dateFormat = "MMdd-HHmmss"
         return f.string(from: Date())
+    }
+
+    /// 读取音频文件里实际存了多少秒。判断后台录音有没有被系统掐断，靠这个数字而不是界面计时器。
+    static func audioDuration(of url: URL) -> Double {
+        guard let player = try? AVAudioPlayer(contentsOf: url) else { return 0 }
+        return player.duration
     }
 
     static let hmFormatter: DateFormatter = {
