@@ -73,12 +73,30 @@ final class OpenAICompatibleClient: LLMService {
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: request)
+        // 日志里绝不写 API Key，只写地址、模型和耗时
+        AppLog.info("LLM", "POST \(url.absoluteString) model=\(config.model) json=\(jsonMode)")
+        let started = Date()
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            AppLog.error("LLM", "网络请求失败：\(error.localizedDescription)")
+            throw error
+        }
+
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
         guard let http = response as? HTTPURLResponse else {
+            AppLog.error("LLM", "没有收到 HTTP 响应")
             throw LLMError.decoding("没有收到 HTTP 响应")
         }
+        AppLog.info("LLM", "HTTP \(http.statusCode)，\(ms)ms，\(data.count) 字节")
+
         guard (200..<300).contains(http.statusCode) else {
-            throw LLMError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            let text = String(data: data, encoding: .utf8) ?? "(非文本响应)"
+            AppLog.error("LLM", "HTTP \(http.statusCode)：\(text.prefix(500))")
+            throw LLMError.http(http.statusCode, text)
         }
         return try Self.extractContent(from: data)
     }

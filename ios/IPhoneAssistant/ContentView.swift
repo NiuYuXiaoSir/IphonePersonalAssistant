@@ -1,9 +1,11 @@
 import SwiftUI
+import UIKit
 
 /// 诊断页：原本的 E1 探针界面。特意保留，因为它还要继续用——
 /// 7 天续签后的数据保留验证、后台录音复测、App Groups 复测都依赖它。
 struct DiagnosticsView: View {
     @StateObject private var store = ProbeStore()
+    @State private var logPreview = ""
 
     var body: some View {
         NavigationStack {
@@ -13,11 +15,15 @@ struct DiagnosticsView: View {
                 recordingSection
                 systemDataSection
                 notificationSection
+                loggerSection
                 reportSection
             }
             .navigationTitle("诊断")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear { store.refreshInstallInfo() }
+            .onAppear {
+                store.refreshInstallInfo()
+                logPreview = AppLog.exportText(limitBytes: 3000)
+            }
             .alert("提示", isPresented: Binding(
                 get: { !store.toast.isEmpty },
                 set: { if !$0 { store.toast = "" } }
@@ -102,7 +108,7 @@ struct DiagnosticsView: View {
         } header: {
             Text("④ 日历与提醒事项（EventKit）")
         } footer: {
-            Text("最后一项是本次最有价值的测试：它走的就是正式版本里「AI 总结 → 一键生成待办」的完整写入路径。")
+            Text("第三项走的就是「AI 解析 → 一键生成待办」的完整写入路径。")
         }
     }
 
@@ -112,6 +118,38 @@ struct DiagnosticsView: View {
             Text(store.notificationStatus).font(.footnote).foregroundStyle(.secondary)
         } header: {
             Text("⑤ 本地通知（免费签名没有推送，只能靠它）")
+        }
+    }
+
+    // MARK: - 日志
+
+    private var loggerSection: some View {
+        Section {
+            Button("刷新日志预览") { logPreview = AppLog.exportText(limitBytes: 3000) }
+            Button("全部日志复制到剪贴板") {
+                UIPasteboard.general.string = AppLog.exportText()
+                store.toast = "日志已复制到剪贴板"
+            }
+            Button("导出日志到「文件」App") {
+                let url = AppLog.directory().appendingPathComponent("export-\(Int(Date().timeIntervalSince1970)).txt")
+                do {
+                    try AppLog.exportText().write(to: url, atomically: true, encoding: .utf8)
+                    store.toast = "已保存：\(url.lastPathComponent)"
+                } catch {
+                    store.toast = "保存失败：\(error.localizedDescription)"
+                }
+            }
+            Button("清空日志", role: .destructive) {
+                AppLog.clear()
+                logPreview = AppLog.exportText(limitBytes: 3000)
+            }
+            Text(logPreview)
+                .font(.system(.caption2, design: .monospaced))
+                .textSelection(.enabled)
+        } header: {
+            Text("⑥ 运行日志")
+        } footer: {
+            Text("没有 Mac 就没有 Xcode 控制台，出问题时这就是唯一的线索。把这段贴给我。")
         }
     }
 
@@ -130,7 +168,7 @@ struct DiagnosticsView: View {
                 .font(.system(.caption2, design: .monospaced))
                 .textSelection(.enabled)
         } header: {
-            Text("⑥ 把结果带回来")
+            Text("⑦ E1 探针报告")
         } footer: {
             Text("把报告贴给我，我就能判断这条链路能不能支撑正式开发。")
         }
