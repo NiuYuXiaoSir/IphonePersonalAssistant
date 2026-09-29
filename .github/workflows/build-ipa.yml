@@ -1,31 +1,27 @@
 ## 在 GitHub 的 macOS runner 上编译出未签名的 ipa。
 ## 签名由电脑端的侧载工具（Sideloadly / AltStore）用免费 Apple ID 完成。
 ##
-## 这是本项目唯一的构建通道（没有 Mac），所以做了两件事来弥补迭代速度：
-##   1. 每次 push 自动构建，产物发布到固定 URL
-##   2. 把 SHA256 写进 Release 说明，下载后可校验完整性
+## 本项目没有 Mac，所以这个流水线额外承担了“报错回传”的职责：
+## 编译失败时把编译器错误写成 ci/build-error.log 提交回仓库，
+## 这样在本地就能读到错误（GitHub Actions 的日志需要登录才能看）。
 
 name: Build unsigned IPA
 
 on:
   push:
-    # 只有代码或构建配置变了才构建（改文档不触发，省额度）
     paths:
       - "ios/**"
       - ".github/workflows/**"
   workflow_dispatch:
 
-# 连续 push 时，自动取消上一次还没跑完的构建，只保留最新一次
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 需要写权限才能创建/更新 Release
 permissions:
   contents: write
 
 env:
-  # 跳过 Homebrew 的自动更新检查，能省下 1 分钟
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
@@ -45,7 +41,6 @@ jobs:
           echo "使用: $NEWEST"
           sudo xcode-select -s "$NEWEST"
           xcodebuild -version
-          xcodebuild -showsdks | grep -i iphoneos || true
 
       - name: 安装 XcodeGen
         run: brew install xcodegen
@@ -55,8 +50,11 @@ jobs:
         run: xcodegen generate
 
       - name: 编译（无签名）
+        id: compile
         working-directory: ios
+        continue-on-error: true
         run: |
+          set -o pipefail
           xcodebuild \
             -project IPhoneAssistant.xcodeproj \
             -scheme IPhoneAssistant \
@@ -66,9 +64,39 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            build 2>&1 | tee ../build.log
+
+      - name: 编译失败时就地记录错误
+        if: steps.compile.outcome == 'failure'
+        run: |
+          mkdir -p ci
+          {
+            echo "# 构建失败"
+            echo ""
+            echo "- 构建号: $GITHUB_RUN_NUMBER"
+            echo "- 提交: $GITHUB_SHA"
+            echo "- 时间: $(date -u +%FT%TZ)"
+            echo ""
+            echo "## 编译器错误"
+            echo '```'
+            grep -n -E "error:" build.log | head -80 || echo "(没搜到 error: 行，看下面的日志尾部)"
+            echo '```'
+            echo ""
+            echo "## 日志尾部"
+            echo '```'
+            tail -80 build.log
+            echo '```'
+          } > ci/build-error.log
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci/build-error.log
+          git commit -m "CI: 记录构建失败 [skip ci]" || true
+          git push origin HEAD:main || echo "推送失败"
+          exit 1
 
       - name: 打包成 ipa
+        if: steps.compile.outcome == 'success'
         run: |
           set -euo pipefail
           APP=$(find ios/build/Build/Products -maxdepth 3 -name "IPhoneAssistant.app" | head -1)
@@ -81,6 +109,7 @@ jobs:
           ls -lh IPhoneAssistant-unsigned.ipa
 
       - name: 备份到 Actions artifact
+        if: steps.compile.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: IPhoneAssistant-unsigned-ipa
@@ -88,15 +117,14 @@ jobs:
           retention-days: 30
 
       - name: 发布到 latest Release
+        if: steps.compile.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # 每次都把当前文件的 SHA256 写进 Release 说明，方便下载后校验没被篡改
           SHA=$(shasum -a 256 IPhoneAssistant-unsigned.ipa | awk '{print $1}')
           NOTES=$(printf '每次 push 自动更新。\n\n**在电脑上下载**（Sideloadly 通过数据线装机，手机不需要联网下载）。\n\n下载后校验完整性：\n```\ncertutil -hashfile IPhoneAssistant-unsigned.ipa SHA256\n```\nSHA256: `%s`' "$SHA")
 
-          # 固定用 latest 这个 tag，保证下载 URL 永远不变
           gh release view latest >/dev/null 2>&1 || \
             gh release create latest --title "最新构建" --notes "初始化"
           gh release upload latest IPhoneAssistant-unsigned.ipa --clobber
