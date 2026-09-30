@@ -20,6 +20,10 @@ final class RecordingService: ObservableObject {
     @Published private(set) var currentFileKB: Int = 0
     @Published private(set) var message: String = "准备就绪"
 
+    /// 每完成一段就回调一次。调用方拿它做“边录边转”——
+    /// 回调里读的是已经落盘完成的文件，不会干扰录音。
+    var onSegmentFinished: ((Meeting.AudioSegment) -> Void)?
+
     private var recorder: AVAudioRecorder?
     private var timer: Timer?
     private var startedAt: Date?
@@ -175,6 +179,9 @@ final class RecordingService: ObservableObject {
         finishedSegments.append(finalized)
         segmentCount = finishedSegments.count
         AppLog.info("Rec", "收尾第 \(finishedSegments.count) 段，时长 \(String(format: "%.1f", duration)) 秒")
+
+        // 段已经完整落盘，交给边录边转
+        onSegmentFinished?(finalized)
     }
 
     private func tick() {
@@ -183,7 +190,6 @@ final class RecordingService: ObservableObject {
         updateCurrentFileSize()
 
         if let rec = recorder, rec.currentTime >= Self.segmentDuration {
-            // 换新的一段
             finishCurrentSegment()
             if !startSegment(index: finishedSegments.count) {
                 AppLog.error("Rec", "分段失败，主动停止录音以免悄悄丢内容")
