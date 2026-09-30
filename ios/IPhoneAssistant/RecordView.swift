@@ -204,7 +204,7 @@ struct RecordView: View {
                 if transcript.isEmpty {
                     self.summaryMessage = "没有文字，跳过自动纪要。可以在会议详情里手动转写或粘文字。"
                 } else if !self.settings.hasKey {
-                    self.summaryMessage = "还没配 API Key，跳过自动纪要。"
+                    self.summaryMessage = "还没配密钥，跳过自动纪要。"
                 } else {
                     self.runAutoSummary(meetingID: m.id, transcript: transcript)
                 }

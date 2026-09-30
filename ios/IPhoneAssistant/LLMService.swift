@@ -71,7 +71,7 @@ final class OpenAICompatibleClient: LLMService {
             throw LLMError.badURL(config.baseURL)
         }
         guard !config.apiKey.isEmpty else {
-            throw LLMError.http(0, "还没有填写 API Key")
+            throw LLMError.http(0, "还没有填写密钥")
         }
 
         let imageCount = messages.reduce(0) { $0 + $1.images.count }
@@ -123,6 +123,48 @@ final class OpenAICompatibleClient: LLMService {
             throw LLMError.http(http.statusCode, text)
         }
         return try Self.extractContent(from: data)
+    }
+
+    /// 拉一次模型清单。
+    /// 各家的形状不完全一样：标准的是 {"data":[{"id":"..."}]}，也有直接给字符串数组的。
+    static func listModels(config: LLMConfig) async throws -> [String] {
+        guard let url = config.modelsURL else { throw LLMError.badURL(config.baseURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+
+        AppLog.info("LLM", "拉取模型列表 \(url.absoluteString)")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw LLMError.decoding("没有收到 HTTP 响应")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8) ?? "(非文本响应)"
+            throw LLMError.http(http.statusCode, text)
+        }
+
+        guard let raw = try? JSONSerialization.jsonObject(with: data) else {
+            throw LLMError.decoding("模型列表不是合法 JSON")
+        }
+
+        var ids: [String] = []
+        if let obj = raw as? [String: Any], let list = obj["data"] as? [Any] {
+            for entry in list {
+                if let dict = entry as? [String: Any], let id = dict["id"] as? String {
+                    ids.append(id)
+                } else if let id = entry as? String {
+                    ids.append(id)
+                }
+            }
+        } else if let list = raw as? [String] {
+            ids = list
+        }
+        let models = Array(Set(ids)).sorted()
+        AppLog.info("LLM", "模型列表返回 \(models.count) 个")
+        if models.isEmpty {
+            throw LLMError.decoding("模型列表是空的，可能这个地址没有 /models 接口，手动填模型名即可")
+        }
+        return models
     }
 
     /// 从响应里取出 choices[0].message.content。

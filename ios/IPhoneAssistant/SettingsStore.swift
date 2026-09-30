@@ -13,6 +13,10 @@ final class SettingsStore: ObservableObject {
     @Published var keyStatus: String = "未保存"
     @Published var testResult: String = ""
     @Published var isTesting: Bool = false
+    /// 从服务端拉回来的模型清单，点一下就能选中
+    @Published var availableModels: [String] = []
+    @Published var isFetchingModels: Bool = false
+    @Published var modelListResult: String = ""
 
     private enum Keys {
         static let preset = "llm.preset"
@@ -34,6 +38,8 @@ final class SettingsStore: ObservableObject {
         baseURL = preset.defaultBaseURL
         model = preset.defaultModel
         testResult = ""
+        availableModels = []
+        modelListResult = ""
         refreshKeyStatus()
         persist()
     }
@@ -64,22 +70,22 @@ final class SettingsStore: ObservableObject {
     func saveAPIKey() {
         let trimmed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            testResult = "API Key 不能为空"
+            testResult = "密钥不能为空"
             return
         }
         if KeychainStore.save(trimmed, for: Self.keyAccount(for: preset)) {
             apiKeyInput = ""
             refreshKeyStatus()
-            testResult = "已把「\(preset.displayName)」的 API Key 写入 Keychain"
+            testResult = "已把「\(preset.displayName)」的密钥存进系统钥匙串"
         } else {
-            testResult = "写入 Keychain 失败"
+            testResult = "写入系统钥匙串失败"
         }
     }
 
     func clearAPIKey() {
         KeychainStore.delete(for: Self.keyAccount(for: preset))
         refreshKeyStatus()
-        testResult = "已清除「\(preset.displayName)」的 API Key"
+        testResult = "已清除「\(preset.displayName)」的密钥"
     }
 
     func makeConfig() -> LLMConfig {
@@ -89,6 +95,41 @@ final class SettingsStore: ObservableObject {
             model: model,
             apiKey: KeychainStore.load(for: Self.keyAccount(for: preset)) ?? ""
         )
+    }
+
+    // MARK: - 拉取模型列表
+
+    /// 订阅套餐里的模型名经常变，与其猜不如问服务端要一份
+    func fetchModels() {
+        persist()
+        let config = makeConfig()
+        guard config.modelsURL != nil else {
+            modelListResult = "接口地址无效：\(baseURL)"
+            return
+        }
+        guard !config.apiKey.isEmpty else {
+            modelListResult = "还没有保存「\(preset.displayName)」的密钥，先在下面填一条"
+            return
+        }
+
+        isFetchingModels = true
+        modelListResult = "正在拉取…"
+
+        Task {
+            do {
+                let models = try await OpenAICompatibleClient.listModels(config: config)
+                await MainActor.run {
+                    self.isFetchingModels = false
+                    self.availableModels = models
+                    self.modelListResult = "服务端返回 \(models.count) 个模型，点名字就能选中"
+                }
+            } catch {
+                await MainActor.run {
+                    self.isFetchingModels = false
+                    self.modelListResult = "拉取失败：\(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     // MARK: - 连接测试
@@ -101,7 +142,7 @@ final class SettingsStore: ObservableObject {
             return
         }
         guard !config.apiKey.isEmpty else {
-            testResult = "还没有保存「\(preset.displayName)」的 API Key"
+            testResult = "还没有保存「\(preset.displayName)」的密钥"
             return
         }
 
@@ -120,7 +161,7 @@ final class SettingsStore: ObservableObject {
                 await MainActor.run {
                     self.isTesting = false
                     self.testResult = """
-                    ✅ 连接成功（\(ms) ms）
+                    ✅ 连接成功（耗时 \(ms) 毫秒）
                     模型：\(config.model)
                     回复：\(reply)
                     """

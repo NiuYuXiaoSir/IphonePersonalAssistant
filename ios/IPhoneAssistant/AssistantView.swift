@@ -24,6 +24,8 @@ struct AssistantView: View {
     @State private var messageIsError = false
     @State private var toast = ""
     @State private var voicePrefix = ""
+    /// 已经排上、还没弹出的通知
+    @State private var pendingNotices: [NotificationService.Pending] = []
 
     private let durationOptions = [15, 30, 45, 60, 90, 120, 180]
 
@@ -34,9 +36,11 @@ struct AssistantView: View {
                 contentSection
                 if kind == .todo { todoTimeSection }
                 if kind == .event { eventTimeSection }
+                if kind == .notification { noticeTimeSection }
                 notesFieldSection
                 saveSection
                 if hasNotes { savedNotesSection }
+                if hasPendingNotices { pendingNoticeSection }
             }
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("速记")
@@ -57,6 +61,7 @@ struct AssistantView: View {
                 if liveASR.isRunning { title = voicePrefix + text }
             }
             .onDisappear { if liveASR.isRunning { liveASR.stop() } }
+            .onAppear { Task { await refreshNotices() } }
             .alert("提示", isPresented: Binding(
                 get: { !toast.isEmpty },
                 set: { if !$0 { toast = "" } }
@@ -97,9 +102,10 @@ struct AssistantView: View {
 
     private var kindHint: String {
         switch kind {
-        case .todo:  return "写一件要做的事，可以设个提醒时间。保存后进提醒事项的「AI助理」列表。"
-        case .event: return "写一件要占用一段时间的事（会议、约人），保存后进日历的「AI助理」。"
-        case .note:  return "记一条信息，不需要行动、也不提醒。存在 App 里，可以复制走。"
+        case .todo:         return "写一件要做的事，可以设个提醒时间。保存后进提醒事项的「AI助理」列表。"
+        case .event:        return "写一件要占用一段时间的事（会议、约人），保存后进日历的「AI助理」。"
+        case .note:         return "记一条信息，不需要行动、也不提醒。存在 App 里，可以复制走。"
+        case .notification: return "到点弹一条通知就完事，不写进提醒事项。适合几分钟到几小时后要响一下的事。"
         }
     }
 
@@ -165,6 +171,16 @@ struct AssistantView: View {
         }
     }
 
+    private var noticeTimeSection: some View {
+        Section {
+            DatePicker("弹出时间", selection: $dueDate, displayedComponents: [.date, .hourAndMinute])
+        } header: {
+            Text("时间")
+        } footer: {
+            Text("到点弹一条系统通知。这条不会出现在提醒事项里——想让事情留下来打勾，选「待办」。")
+        }
+    }
+
     private var notesFieldSection: some View {
         Section {
             TextField(bodyPlaceholder, text: $notes, axis: .vertical)
@@ -196,20 +212,59 @@ struct AssistantView: View {
                     .foregroundStyle(messageIsError ? Color.orange : Color.green)
             }
         } footer: {
-            Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。这一页不联网，没配 API Key 也能用。")
+            Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。这一页不联网，没配密钥也能用。")
         }
     }
 
     private var saveButtonTitle: String {
         switch kind {
-        case .todo:  return "保存到提醒事项"
-        case .event: return "保存到日历"
-        case .note:  return "记下这条备忘"
+        case .todo:         return "保存到提醒事项"
+        case .event:        return "保存到日历"
+        case .note:         return "记下这条备忘"
+        case .notification: return "安排这条通知"
         }
     }
 
     private var hasNotes: Bool {
         !noteStore.notes.isEmpty
+    }
+
+    private var hasPendingNotices: Bool {
+        !pendingNotices.isEmpty
+    }
+
+    /// 还没弹出来的通知。iOS 自己不给用户看这个队列，所以在这里列出来，
+    /// 不然「10 分钟后提醒我」排下去之后就没法撤了。
+    private var pendingNoticeSection: some View {
+        Section {
+            ForEach(pendingNotices) { notice in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(notice.title)
+                        .font(.subheadline.weight(.medium))
+                    Text(notice.fireDate.formatted(date: .abbreviated, time: .shortened) + " 弹出")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+                .swipeActions {
+                    Button(role: .destructive) {
+                        NotificationService.cancel(id: notice.id)
+                        pendingNotices.removeAll { $0.id == notice.id }
+                    } label: {
+                        Label("取消", systemImage: "bell.slash")
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text("已安排的通知（\(pendingNotices.count) 条）")
+                Spacer()
+                Button("刷新") { Task { await refreshNotices() } }
+                    .font(.caption)
+            }
+        } footer: {
+            Text("这些通知还没弹出来，左滑可以取消。它们只在手机的通知队列里，不在提醒事项里。")
+        }
     }
 
     private var savedNotesSection: some View {
@@ -313,6 +368,11 @@ struct AssistantView: View {
                 case .note:
                     NoteStore.shared.add(title: trimmed, body: body)
                     done = "已记下备忘：\(trimmed)"
+                case .notification:
+                    try await SystemWriter.writeNotification(title: trimmed,
+                                                             body: body,
+                                                             dueDate: dueString)
+                    done = "已安排通知：\(trimmed) · \(displayTime)"
                 }
                 await MainActor.run {
                     self.busy = false
@@ -322,6 +382,7 @@ struct AssistantView: View {
                     self.notes = ""
                     AppLog.info("QuickAdd", done)
                 }
+                if itemKind == .notification { await refreshNotices() }
             } catch {
                 await MainActor.run {
                     self.busy = false
@@ -334,10 +395,16 @@ struct AssistantView: View {
 
     private var needsTime: Bool {
         switch kind {
-        case .todo:  return hasDueDate
-        case .event: return true
-        case .note:  return false
+        case .todo:         return hasDueDate
+        case .event:        return true
+        case .note:         return false
+        case .notification: return true
         }
+    }
+
+    private func refreshNotices() async {
+        let list = await NotificationService.pending()
+        await MainActor.run { self.pendingNotices = list }
     }
 
     // MARK: - 小工具

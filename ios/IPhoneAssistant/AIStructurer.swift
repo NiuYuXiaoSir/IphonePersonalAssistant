@@ -8,20 +8,34 @@ struct ParsedItem: Identifiable, Codable {
         case todo
         case event
         case note
+        /// 短时、一次性的提醒，弹完就完，不写进提醒事项
+        case notification
 
         var label: String {
             switch self {
-            case .todo:  return "待办"
-            case .event: return "日程"
-            case .note:  return "备忘"
+            case .todo:         return "待办"
+            case .event:        return "日程"
+            case .note:         return "备忘"
+            case .notification: return "提醒"
+            }
+        }
+
+        /// 这条东西最终会落到哪儿
+        var destination: String {
+            switch self {
+            case .todo:         return "提醒事项"
+            case .event:        return "日历"
+            case .note:         return "备忘"
+            case .notification: return "通知"
             }
         }
 
         var symbol: String {
             switch self {
-            case .todo:  return "checklist"
-            case .event: return "calendar"
-            case .note:  return "note.text"
+            case .todo:         return "checklist"
+            case .event:        return "calendar"
+            case .note:         return "note.text"
+            case .notification: return "bell"
             }
         }
     }
@@ -90,7 +104,7 @@ enum AIStructurer {
     {
       "items": [
         {
-          "kind": "todo 或 event 或 note",
+          "kind": "todo 或 event 或 note 或 notification",
           "title": "条目标题，不超过 30 字",
           "notes": "补充说明，没有就空字符串",
           "due_date": "yyyy-MM-dd HH:mm 或 yyyy-MM-dd，没有就空字符串",
@@ -103,7 +117,13 @@ enum AIStructurer {
     }
 
     规则：
-    1. kind 判断：有明确时间点、要占用一段时间的 → event；要做但没定具体时段 → todo；只是信息、不需要行动 → note。照片（白板、便签、纸质笔记）里的内容通常是要做的事，除非明确只是信息（一串账号、地址、名言），否则判成 todo，不要判成 note——用户拍照基本是想让自己记得去做。
+    1. kind 决定这条东西最后存到哪儿，判错了用户就找不到它，所以按下面的分工来选：
+       - notification → 只是在某个时刻响一下，不写进提醒事项。用在「短时间内的、一次性的提醒」：几分钟到几小时后弹一次就够，不需要事后回来打勾。像「10 分钟后提醒我给供应商打电话」「一小时后叫我」「下午三点提醒我打个电话」。这类**必须**有明确时刻，没有时刻的不要判成 notification。
+       - todo → 写进提醒事项。需要跟踪完成状态的事，或者时间比较远的事（「这周五之前把报价单发给采购」）。没写时间的也归这里。
+       - event → 写进日历。要占用一段时间的事（会议、约人、饭局、出差），有开始时间和时长。
+       - note → 只是信息，不需要行动（账号、地址、名言、别人的话）。
+       拿不准时问自己：用户事后会回来打勾吗？会的话是 todo；只是想让它在某刻响一下，就是 notification。
+       照片（白板、便签、纸质笔记）里的内容通常是要做的事，除非明确只是信息，否则判成 todo，不要判成 note——用户拍照基本是想让自己记得去做。
     2. 一切时间换算都以用户在消息里给出的【现在】为准，那是带时刻的真实当前时间，不是随便挑的。相对表达必须算出绝对时间：“明天下午三点”“下周三”“月底前”都要变成具体日期，不要保留原文。
     3. “10分钟后”“半小时后”这类相对当前时刻的表达，除了在 due_date 里算出绝对时间，还要在 due_in_minutes 里填上那个分钟数。两个都要对得上。
     4. 一句话里包含多件事就拆成多条；同一件事不要拆开。

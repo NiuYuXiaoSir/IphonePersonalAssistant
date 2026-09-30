@@ -69,6 +69,18 @@ enum SystemWriter {
         }
     }
 
+    // MARK: - 本地通知
+
+    /// 排一条本地通知。这条不进提醒事项，也不需要 EventKit 权限。
+    /// 用于「10 分钟后提醒我」这类弹一次就够、不用回来打勾的短时提醒。
+    static func writeNotification(title: String, body: String, dueDate: String) async throws {
+        let trimmed = dueDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let fireDate = date(from: trimmed, defaultHour: 9) else {
+            throw WriteError.saveFailed("提醒必须有明确的时间，但没能从「\(trimmed)」里认出时间")
+        }
+        try await NotificationService.schedule(title: title, body: body, at: fireDate)
+    }
+
     private static func ensureReminderList(_ store: EKEventStore, source: EKSource) throws -> EKCalendar {
         if let existing = store.calendars(for: .reminder).first(where: { $0.title == reminderListName }) {
             return existing

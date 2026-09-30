@@ -27,6 +27,11 @@ extension SystemWriter {
                     // 备忘录没有公开的写入 API，存进 App 自己的备忘列表
                     NoteStore.shared.add(title: item.title, body: item.notes)
                     ok.append("备忘 · \(item.title)")
+                case .notification:
+                    try await writeNotification(title: item.title,
+                                                body: item.notes,
+                                                dueDate: item.dueDate)
+                    ok.append("提醒 · \(item.title)")
                 }
             } catch {
                 bad.append("\(item.title)：\(error.localizedDescription)")
@@ -205,9 +210,9 @@ struct MeetingSummaryPanel: View {
 
             Button {
                 UIPasteboard.general.string = meeting?.summaryJSON ?? ""
-                status = "已复制纪要 JSON"
+                status = "已复制纪要原文"
             } label: {
-                Label("复制纪要 JSON", systemImage: "doc.on.doc")
+                Label("复制纪要原文", systemImage: "doc.on.doc")
                     .font(.footnote)
             }
             .buttonStyle(.bordered)
@@ -319,7 +324,7 @@ struct MeetingSummaryPanel: View {
             return
         }
         guard !config.apiKey.isEmpty else {
-            status = "还没有保存 API Key，去「设置」里填一个"
+            status = "还没有保存密钥，去「设置」里填一个"
             return
         }
 

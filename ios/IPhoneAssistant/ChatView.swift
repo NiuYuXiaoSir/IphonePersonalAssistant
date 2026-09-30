@@ -135,7 +135,7 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.green)
             } else {
-                Label("还没配置 API Key，先去「设置」页填一个", systemImage: "exclamationmark.triangle")
+                Label("还没配置密钥，先去「设置」页填一个", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -510,7 +510,7 @@ struct ChatView: View {
 
         let config = settings.makeConfig()
         guard config.chatCompletionsURL != nil, !config.apiKey.isEmpty else {
-            toast = "还没有可用的 API Key，去「设置」页填一个再发。"
+            toast = "还没有可用的密钥，去「设置」页填一个再发。"
             return
         }
 
@@ -576,7 +576,8 @@ struct ChatView: View {
         let selectedTodos = selected.filter { $0.kind == .todo }
         let selectedEvents = selected.filter { $0.kind == .event }
         let selectedNotes = selected.filter { $0.kind == .note }
-        AppLog.info("Chat", "开始写入：待办 \(selectedTodos.count) 条、日程 \(selectedEvents.count) 条、备忘 \(selectedNotes.count) 条")
+        let selectedNotices = selected.filter { $0.kind == .notification }
+        AppLog.info("Chat", "开始写入：待办 \(selectedTodos.count)、日程 \(selectedEvents.count)、备忘 \(selectedNotes.count)、通知 \(selectedNotices.count)")
 
         chat.update(id: id) { $0.busy = true }
 
@@ -586,6 +587,7 @@ struct ChatView: View {
                 var summary: [String] = []
                 if !selectedTodos.isEmpty { summary.append("提醒事项 \(selectedTodos.count) 条") }
                 if !selectedEvents.isEmpty { summary.append("日历 \(selectedEvents.count) 条") }
+                if !selectedNotices.isEmpty { summary.append("通知 \(selectedNotices.count) 条") }
                 if !selectedNotes.isEmpty { summary.append("备忘 \(selectedNotes.count) 条") }
                 AppLog.info("Chat", "写入结束：成功 \(result.succeeded.count)，失败 \(result.failed.count)")
 
@@ -611,6 +613,12 @@ struct ChatView: View {
                         }
                         if !selectedEvents.isEmpty {
                             text += "日程在日历的「\(SystemWriter.calendarName)」里。"
+                        }
+                        if !selectedNotices.isEmpty {
+                            text += "通知到点会弹出来，不用它了可以在「速记」页取消。"
+                        }
+                        if !selectedNotes.isEmpty {
+                            text += "备忘存在 App 里，在「速记」页能看到。"
                         }
                         entry.text = text
                     } else {
@@ -786,13 +794,7 @@ private struct ItemsCard: View {
         return "写入系统（\(selected.count) 条）"
     }
 
-    private func destination(of kind: ParsedItem.Kind) -> String {
-        switch kind {
-        case .todo:  return "提醒事项"
-        case .event: return "日历"
-        case .note:  return "备忘"
-        }
-    }
+    private func destination(of kind: ParsedItem.Kind) -> String { kind.destination }
 }
 
 // MARK: - 图片压缩
