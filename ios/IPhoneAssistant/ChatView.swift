@@ -258,16 +258,31 @@ struct ChatView: View {
             }
 
             if let result = entry.result {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                        .padding(.top, 2)
-                    Text(result)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                            .padding(.top, 2)
+                        Text(result)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    // 写进的是「AI助理」这个列表/日历，不是默认那个。
+                    // 用户去提醒事项里翻不到是常事，给个直达入口省得到处找。
+                    if !entry.writtenKinds.isEmpty {
+                        HStack(spacing: 8) {
+                            if entry.writtenKinds.contains("todo") {
+                                openAppButton("打开提醒事项", scheme: "x-apple-reminder://")
+                            }
+                            if entry.writtenKinds.contains("event") {
+                                openAppButton("打开日历", scheme: "calshow://")
+                            }
+                        }
+                    }
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -430,6 +445,23 @@ struct ChatView: View {
         )
     }
 
+    private func openAppButton(_ title: String, scheme: String) -> some View {
+        Button {
+            guard let url = URL(string: scheme) else { return }
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        } label: {
+            HStack(spacing: 4) {
+                Text(title).font(.caption)
+                Image(systemName: "arrow.up.forward.app")
+                    .font(.system(size: 10))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(.tertiarySystemBackground), in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func openCamera() {
         guard CameraPicker.isAvailable else {
             toast = "这台设备没有可用的相机（模拟器上也没有）。用「从相册选择」吧。"
@@ -538,17 +570,32 @@ struct ChatView: View {
             chat.update(id: id) { $0.result = "没有勾选任何条目。" }
             return
         }
+
+        // 先按目标分好组：写完之后要能明确说出「哪几条去了哪里」，
+        // 不然用户回到提醒事项里找不到东西，也没法判断是没写进去还是看错了列表。
+        let selectedTodos = selected.filter { $0.kind == .todo }
+        let selectedEvents = selected.filter { $0.kind == .event }
+        let selectedNotes = selected.filter { $0.kind == .note }
+        AppLog.info("Chat", "开始写入：待办 \(selectedTodos.count) 条、日程 \(selectedEvents.count) 条、备忘 \(selectedNotes.count) 条")
+
         chat.update(id: id) { $0.busy = true }
 
         Task {
             let result = await SystemWriter.writeAll(selected)
             await MainActor.run {
+                var summary: [String] = []
+                if !selectedTodos.isEmpty { summary.append("提醒事项 \(selectedTodos.count) 条") }
+                if !selectedEvents.isEmpty { summary.append("日历 \(selectedEvents.count) 条") }
+                if !selectedNotes.isEmpty { summary.append("备忘 \(selectedNotes.count) 条") }
+                AppLog.info("Chat", "写入结束：成功 \(result.succeeded.count)，失败 \(result.failed.count)")
+
                 chat.update(id: id) { entry in
                     entry.busy = false
                     entry.items = nil
+                    entry.writtenKinds = selected.map { $0.kind.rawValue }
                     var lines: [String] = []
                     if !result.succeeded.isEmpty {
-                        lines.append("已写入 \(result.succeeded.count) 条：")
+                        lines.append("已写入：" + summary.joined(separator: "、"))
                         lines.append(contentsOf: result.succeeded.map { "· " + $0 })
                     }
                     if !result.failed.isEmpty {
@@ -556,9 +603,19 @@ struct ChatView: View {
                         lines.append(contentsOf: result.failed.map { "· " + $0 })
                     }
                     entry.result = lines.joined(separator: "\n")
-                    entry.text = result.failed.isEmpty
-                        ? "已写入 \(result.succeeded.count) 条。"
-                        : "写入完成：成功 \(result.succeeded.count) 条，失败 \(result.failed.count) 条。"
+
+                    if result.failed.isEmpty {
+                        var text = "已写入 " + summary.joined(separator: "、") + "。"
+                        if !selectedTodos.isEmpty {
+                            text += "待办在提醒事项的「\(SystemWriter.reminderListName)」列表里。"
+                        }
+                        if !selectedEvents.isEmpty {
+                            text += "日程在日历的「\(SystemWriter.calendarName)」里。"
+                        }
+                        entry.text = text
+                    } else {
+                        entry.text = "写入完成：成功 \(result.succeeded.count) 条，失败 \(result.failed.count) 条。"
+                    }
                 }
             }
         }
@@ -615,12 +672,7 @@ private struct ItemsCard: View {
                     TextField("标题", text: item.title, axis: .vertical)
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1...3)
-                    Text(item.wrappedValue.kind.label)
-                        .font(.system(size: 10))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.14), in: Capsule())
-                        .foregroundStyle(Color.accentColor)
+                    destinationMenu(item)
                 }
 
                 HStack(spacing: 8) {
@@ -653,6 +705,33 @@ private struct ItemsCard: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    /// 这一条会存到哪儿——顺手也能改。
+    ///
+    /// 模型把照片里的东西判成「备忘」是常见的事，而备忘不会进提醒事项。
+    /// 与其让用户回到对话里重新说一遍，不如在这里点一下就改过去。
+    private func destinationMenu(_ item: Binding<ParsedItem>) -> some View {
+        Menu {
+            ForEach(ParsedItem.Kind.allCases, id: \.self) { candidate in
+                Button {
+                    item.wrappedValue.kind = candidate
+                } label: {
+                    Label("\(candidate.label) → \(destination(of: candidate))", systemImage: candidate.symbol)
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(destination(of: item.wrappedValue.kind))
+                    .font(.system(size: 10))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 7))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.accentColor.opacity(0.14), in: Capsule())
+            .foregroundStyle(Color.accentColor)
+        }
     }
 
     private var footer: some View {
@@ -695,7 +774,25 @@ private struct ItemsCard: View {
         !items.isEmpty && items.allSatisfy { $0.include }
     }
 
-    private var writeTitle: String { busy ? "写入中…" : "写入系统" }
+    /// 按钮上直接说清这批东西会落到哪儿
+    private var writeTitle: String {
+        if busy { return "写入中…" }
+        let selected = items.filter { $0.include }
+        guard !selected.isEmpty else { return "写入系统" }
+        let kinds = Set(selected.map { $0.kind })
+        if kinds.count == 1, let only = kinds.first {
+            return "存入\(destination(of: only))（\(selected.count) 条）"
+        }
+        return "写入系统（\(selected.count) 条）"
+    }
+
+    private func destination(of kind: ParsedItem.Kind) -> String {
+        switch kind {
+        case .todo:  return "提醒事项"
+        case .event: return "日历"
+        case .note:  return "备忘"
+        }
+    }
 }
 
 // MARK: - 图片压缩

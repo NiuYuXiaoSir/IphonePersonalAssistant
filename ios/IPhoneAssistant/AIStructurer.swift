@@ -103,14 +103,14 @@ enum AIStructurer {
     }
 
     规则：
-    1. kind 判断：有明确时间点、要占用一段时间的 → event；要做但没定具体时段 → todo；只是信息、不需要行动 → note。
+    1. kind 判断：有明确时间点、要占用一段时间的 → event；要做但没定具体时段 → todo；只是信息、不需要行动 → note。照片（白板、便签、纸质笔记）里的内容通常是要做的事，除非明确只是信息（一串账号、地址、名言），否则判成 todo，不要判成 note——用户拍照基本是想让自己记得去做。
     2. 一切时间换算都以用户在消息里给出的【现在】为准，那是带时刻的真实当前时间，不是随便挑的。相对表达必须算出绝对时间：“明天下午三点”“下周三”“月底前”都要变成具体日期，不要保留原文。
     3. “10分钟后”“半小时后”这类相对当前时刻的表达，除了在 due_date 里算出绝对时间，还要在 due_in_minutes 里填上那个分钟数。两个都要对得上。
     4. 一句话里包含多件事就拆成多条；同一件事不要拆开。
     5. title 要写成动作句（如“把方案改完发给老王”），不要只写名词。
     6. 绝不编造原文里没有的时间、人名、优先级。不确定就把对应字段留空。时间一律基于【现在】推算，不要凭空给一个时刻。
     7. 如果整段内容里没有任何可执行的事，返回 {"items": []}。
-    8. 如果带了图片，先把图里的内容读出来（可能是白板照片、纸质笔记、聊天截图、名片、手写便签），把其中提到的待办、时间、人名一并抽取。图里的字看不清就不要猜，宁可不抽。
+    8. 如果带了图片，先把图里的内容读出来（可能是白板照片、纸质笔记、聊天截图、名片、手写便签），把其中提到的待办、时间、人名一并抽取。用户只发一张图、没配文字时，图里的内容就是全部输入，不要因为用户没打字就返回空数组：图里哪怕只有一句“明天交周报”，也要抽成一条待办。图里的字看不清就不要猜，宁可不抽。
     9. 如果用户是在改上一条结果（比如“第二条改成周五下午”“不要第一条了”），要结合【最近的对话】里已经列出的条目，把改完之后的完整清单重新输出一遍，不要只输出改动的那一条，也不要漏掉没被改动的条目。
     """
 
@@ -176,8 +176,7 @@ enum AIStructurer {
     /// 各家网关的返回字段经常有增减，手解能容忍缺字段，报错也能直接带出原文。
     static func decode(_ raw: String) throws -> [ParsedItem] {
         let cleaned = stripCodeFence(raw)
-        guard let data = cleaned.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        guard let obj = jsonObject(from: cleaned) else {
             AppLog.error("AI", "返回的不是 JSON：\(cleaned.prefix(400))")
             throw LLMError.decoding("模型没有返回合法 JSON，原文：\(cleaned.prefix(200))")
         }
@@ -196,7 +195,10 @@ enum AIStructurer {
 
             var dueDate = ((dict["due_date"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let relative = (dict["due_in_minutes"] as? Int) ?? (dict["due_in_minutes"] as? NSNumber)?.intValue ?? -1
-            if relative >= 0 {
+            // 只认正数：字段缺省是 -1，但模型也可能随手填 0（「没有相对时间」写成 0 很常见）。
+            // 要是把 0 当成「0 分钟后」，一条写着「10月8日交报告」的待办会被改成「现在」，
+            // 比不换算还糟——这是之前覆盖得最狠的一处。
+            if relative > 0 {
                 // “10 分钟后”这种不采信模型算出来的绝对值，本地按当前时刻重算一遍。
                 // 模型的时间算术错得很有规律（常常是拿日期当零点），错的又正好是最要紧的那条。
                 let fixed = absoluteDate(afterMinutes: relative)
@@ -218,7 +220,28 @@ enum AIStructurer {
                 remindBeforeMinutes: max(0, remindBefore)
             )
         }
+        for item in items {
+            AppLog.info("AI", "条目 \(item.kind.rawValue)「\(item.title)」时间=\(item.dueDate.isEmpty ? "无" : item.dueDate) 提前提醒=\(item.remindBeforeMinutes)分")
+        }
         return items
+    }
+
+    /// 从模型返回里挖出那个 JSON 对象。
+    ///
+    /// 先按整段解析；不行就退一步找第一个 `{` 到最后一个 `}`。
+    /// 带图的时候不会发 response_format（有些网关不接受它和多模态同时出现），
+    /// 模型偶尔会在 JSON 前面加一句「好的，图里是这些：」，那种情况下这层兜底就是必需的。
+    static func jsonObject(from text: String) -> [String: Any]? {
+        if let data = text.data(using: .utf8),
+           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            return obj
+        }
+        guard let start = text.firstIndex(of: "{"),
+              let end = text.lastIndex(of: "}"),
+              start < end else { return nil }
+        let slice = String(text[start...end])
+        guard let data = slice.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     /// 有些模型会把 JSON 包在 ```json ... ``` 里，即使开了 JSON 模式也会。

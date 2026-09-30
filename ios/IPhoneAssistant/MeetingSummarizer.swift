@@ -93,8 +93,7 @@ enum MeetingSummarizer {
     /// 手解 JSON，容忍缺字段
     static func decode(_ raw: String) throws -> MeetingSummary {
         let cleaned = AIStructurer.stripCodeFence(raw)
-        guard let data = cleaned.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        guard let obj = AIStructurer.jsonObject(from: cleaned) else {
             AppLog.error("Summary", "返回的不是 JSON：\(cleaned.prefix(400))")
             throw LLMError.decoding("纪要返回的不是合法 JSON，原文开头：\(cleaned.prefix(200))")
         }

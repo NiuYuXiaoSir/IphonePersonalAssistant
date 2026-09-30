@@ -28,6 +28,8 @@ struct ChatEntry: Codable, Identifiable {
     var items: [ParsedItem]?
     /// 写回系统后的结果摘要
     var result: String?
+    /// 实际写到过哪些地方（todo / event / note），决定结果下面显示哪个「打开…」按钮
+    var writtenKinds: [String] = []
     var state: State = .ok
     /// 正在请求模型或正在写入系统
     var busy: Bool = false
@@ -40,7 +42,7 @@ struct ChatEntry: Codable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, images, items, result, state, busy, createdAt
+        case id, role, text, images, items, result, writtenKinds, state, busy, createdAt
     }
 
     /// 手写解码，理由和 ParsedItem 一样：这份 JSON 要长期留在手机上，
@@ -53,6 +55,7 @@ struct ChatEntry: Codable, Identifiable {
         images = (try? c.decode([String].self, forKey: .images)) ?? []
         items = try? c.decodeIfPresent([ParsedItem].self, forKey: .items)
         result = try? c.decodeIfPresent(String.self, forKey: .result)
+        writtenKinds = (try? c.decode([String].self, forKey: .writtenKinds)) ?? []
         state = (try? c.decode(State.self, forKey: .state)) ?? .ok
         busy = (try? c.decode(Bool.self, forKey: .busy)) ?? false
         createdAt = (try? c.decode(Date.self, forKey: .createdAt)) ?? Date()

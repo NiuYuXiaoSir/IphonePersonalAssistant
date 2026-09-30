@@ -81,10 +81,13 @@ final class OpenAICompatibleClient: LLMService {
             "stream": false
         ]
         if jsonMode {
-            // JSON 模式和视觉输入不能同时用，有些网关会直接报错，所以带图时关掉
-            body["response_format"] = ["type": "json_object"]
             if imageCount > 0 {
-                AppLog.warn("LLM", "本次带图 \(imageCount) 张，但仍要求 JSON 输出，如果服务端报错就取消勾选图片重试")
+                // 带图时不发 response_format：JSON 模式和视觉输入不是所有网关都接受，
+                // 发了可能直接 400。这里只靠 prompt 约束 JSON——解析那边已经能容忍
+                // ```json 代码块和前后废话，所以不必冒这个险。
+                AppLog.info("LLM", "本次带图 \(imageCount) 张，跳过 response_format，改由 prompt 约束输出 JSON")
+            } else {
+                body["response_format"] = ["type": "json_object"]
             }
         }
 
@@ -134,11 +137,34 @@ final class OpenAICompatibleClient: LLMService {
 
         if let choices = obj["choices"] as? [[String: Any]],
            let first = choices.first,
-           let message = first["message"] as? [String: Any],
-           let content = message["content"] as? String {
-            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { throw LLMError.emptyReply }
-            return trimmed
+           let message = first["message"] as? [String: Any] {
+
+            // content 正常是字符串。但视觉请求下有些网关会返回分片数组
+            // （[{"type":"text","text":"..."}]），当成字符串取就会整个失败，
+            // 表现成「模型没返回内容」——带图时才出现，很容易误判成图片的问题。
+            if let content = message["content"] as? String {
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+            if let parts = message["content"] as? [[String: Any]] {
+                let joined = parts.compactMap { $0["text"] as? String }.joined()
+                let trimmed = joined.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    AppLog.info("LLM", "content 是分片数组，已拼成 \(trimmed.count) 字")
+                    return trimmed
+                }
+            }
+
+            // 推理型模型会把正文放在 reasoning_content 里，content 留空
+            if let reasoning = message["reasoning_content"] as? String,
+               !reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                AppLog.warn("LLM", "content 为空但 reasoning_content 有内容，当前模型像是推理模型，不适合做抽取")
+                throw LLMError.decoding("模型把内容放进了 reasoning_content，正文是空的。换一个非推理模型（如 deepseek-flash）再试。")
+            }
+
+            if message["content"] != nil {
+                throw LLMError.emptyReply
+            }
         }
 
         // 有些网关出错时返回 200 但在 body 里放 error
@@ -147,6 +173,9 @@ final class OpenAICompatibleClient: LLMService {
             throw LLMError.http(200, msg)
         }
 
-        throw LLMError.decoding("响应里找不到 choices[0].message.content")
+        // 带上原文开头：换了网关却读不出内容时，这段是唯一的线索
+        let preview = String(data: data, encoding: .utf8).map { String($0.prefix(300)) } ?? "(非文本)"
+        AppLog.error("LLM", "响应结构不认识：\(preview)")
+        throw LLMError.decoding("响应里找不到 choices[0].message.content，原文开头：\(preview)")
     }
 }
