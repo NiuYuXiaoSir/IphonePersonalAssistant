@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 设置页。
 ///
@@ -19,9 +20,23 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(YBColor.bg)
             .listRowBackground(YBColor.surface)
+            // 这一页有三个输入框（地址、模型名、密钥），以前只能靠「点别处」碰运气收键盘：
+            // 往下滑一下收掉，右上角也给一个明确的按钮
+            .scrollDismissesKeyboard(.immediately)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("收起键盘") { hideKeyboard() }
+                }
+            }
             .navigationTitle("设置")
             .onAppear { balance.refreshIfStale(settings: settings, maxAge: 30) }
         }
+    }
+
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
     }
 
     // MARK: - 余额 / 用量
