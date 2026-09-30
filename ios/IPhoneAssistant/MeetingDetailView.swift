@@ -357,7 +357,7 @@ struct MeetingDetailView: View {
                     Button {
                         exportMarkdown(m)
                     } label: {
-                        Label("导出为 Markdown 到「文件」App", systemImage: "doc.text")
+                        Label("导出为文本文件到「文件」", systemImage: "doc.text")
                             .font(.footnote)
                     }
                     .buttonStyle(.bordered)
@@ -366,7 +366,7 @@ struct MeetingDetailView: View {
                         UIPasteboard.general.string = markdown(m)
                         toast = "已复制到剪贴板"
                     } label: {
-                        Label("复制 Markdown 到剪贴板", systemImage: "doc.on.doc")
+                        Label("复制全部内容到剪贴板", systemImage: "doc.on.doc")
                             .font(.footnote)
                     }
                     .buttonStyle(.bordered)
@@ -378,10 +378,10 @@ struct MeetingDetailView: View {
                     infoLine("录音段", "\(m.segments.count) 段")
                     infoLine("文字", m.transcript.isEmpty ? "（无）" : "\(m.transcript.count) 字")
                     infoLine("纪要", m.summaryJSON.isEmpty ? "（还没生成）" : "已生成")
-                    infoLine("状态", m.status)
+                    infoLine("状态", Self.statusText(m.status))
                 }
 
-                Text("免费签名只给 7 天，而且没有 iCloud。定期导出是唯一的保险，别等签名过期了才想起来。")
+                Text("免费签名只给 7 天，也没有云端同步。定期导出是唯一的保险，别等签名过期了才想起来。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -415,6 +415,19 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// 记录里的状态是英文标识，界面上一律显示中文
+    private static func statusText(_ status: String) -> String {
+        switch status {
+        case "recording":   return "正在录音"
+        case "recorded":    return "已录音"
+        case "transcribed": return "已转写"
+        case "summarized":  return "已生成纪要"
+        case "recovered":   return "意外中断，已恢复"
+        case "failed":      return "失败"
+        default:            return status
+        }
+    }
+
     // MARK: - 工具栏
 
     @ToolbarContentBuilder
@@ -433,7 +446,7 @@ struct MeetingDetailView: View {
                         toast = "已复制到剪贴板"
                     }
                 } label: {
-                    Label("复制 Markdown", systemImage: "doc.on.doc")
+                    Label("复制全部内容", systemImage: "doc.on.doc")
                 }
                 Divider()
                 Button(role: .destructive) {

@@ -2,14 +2,20 @@ import SwiftUI
 import UIKit
 import PhotosUI
 
-/// 对话页：和助理说话，它把话里的待办、日程、备忘直接建出来。
+/// 一段对话：和助理说话，它把话里的待办、日程、备忘、提醒直接建出来。
 ///
 /// 这个页面的重点是没有「解析」这一步——发出去的消息本身就是操作，
 /// 助手回过来的卡片就是要建的东西，确认一下就能写进系统。
 /// 需要自己一项项填的时候去「速记」页，那是给人用手填的。
+///
+/// 它是被「对话」列表推进来的（外面已经有 NavigationStack），所以这里不再套一层。
 struct ChatView: View {
     @EnvironmentObject private var settings: SettingsStore
-    @StateObject private var chat = ChatStore()
+    @EnvironmentObject private var chats: ChatStore
+
+    /// 看的是哪一段对话
+    let threadID: String
+
     @StateObject private var liveASR = LiveSpeechRecognizer()
 
     @State private var draft = ""
@@ -38,41 +44,63 @@ struct ChatView: View {
     ]
 
     var body: some View {
-        NavigationStack {
-            conversation
-                .background(Color(.systemBackground))
-                .navigationTitle("对话")
-                .navigationBarTitleDisplayMode(.inline)
-                .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-                .toolbar { toolbarContent }
-                .fullScreenCover(isPresented: $showCamera) {
-                    CameraPicker(isPresented: $showCamera) { attach($0) }
-                        .ignoresSafeArea()
-                }
-                .photosPicker(isPresented: $showLibrary,
-                              selection: $libraryItems,
-                              maxSelectionCount: 4,
-                              matching: .images)
-                .onChange(of: libraryItems) { _, items in loadLibrary(items) }
-                .onChange(of: liveASR.liveText) { _, text in
-                    if liveASR.isRunning { draft = voicePrefix + text }
-                }
-                .onDisappear { if liveASR.isRunning { liveASR.stop() } }
-                .confirmationDialog("清空这段对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
-                    Button("清空", role: .destructive) { chat.clear() }
-                    Button("取消", role: .cancel) {}
-                } message: {
-                    Text("对话记录和里面的图片都会被删掉。已经写进提醒事项和日历的条目不受影响。")
-                }
-                .alert("提示", isPresented: Binding(
-                    get: { !toast.isEmpty },
-                    set: { if !$0 { toast = "" } }
-                )) {
-                    Button("知道了") { toast = "" }
-                } message: {
-                    Text(toast)
-                }
+        conversation
+            .background(Color(.systemBackground))
+            .navigationTitle(threadTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+            .toolbar { toolbarContent }
+            .fullScreenCover(isPresented: $showCamera) {
+                CameraPicker(isPresented: $showCamera) { attach($0) }
+                    .ignoresSafeArea()
+            }
+            .photosPicker(isPresented: $showLibrary,
+                          selection: $libraryItems,
+                          maxSelectionCount: 4,
+                          matching: .images)
+            .onChange(of: libraryItems) { _, items in loadLibrary(items) }
+            .onChange(of: liveASR.liveText) { _, text in
+                if liveASR.isRunning { draft = voicePrefix + text }
+            }
+            .onDisappear { if liveASR.isRunning { liveASR.stop() } }
+            .confirmationDialog("清空这段对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
+                Button("清空", role: .destructive) { chats.clearThread(id: threadID) }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("这段对话的消息和图片都会被删掉，会话本身留着。已经写进提醒事项、日历、备忘的东西不受影响。")
+            }
+            .alert("提示", isPresented: Binding(
+                get: { !toast.isEmpty },
+                set: { if !$0 { toast = "" } }
+            )) {
+                Button("知道了") { toast = "" }
+            } message: {
+                Text(toast)
+            }
+    }
+
+    // MARK: - 会话读写
+
+    private var entries: [ChatEntry] { chats.thread(id: threadID)?.entries ?? [] }
+
+    private var threadTitle: String { chats.thread(id: threadID)?.title ?? "对话" }
+
+    private func entry(_ id: String) -> ChatEntry? {
+        entries.first { $0.id == id }
+    }
+
+    private func updateEntry(_ id: String, _ mutate: (inout ChatEntry) -> Void) {
+        chats.updateThread(id: threadID) { thread in
+            guard let index = thread.entries.firstIndex(where: { $0.id == id }) else { return }
+            mutate(&thread.entries[index])
         }
+    }
+
+    private func removeEntry(_ id: String) {
+        chats.updateThread(id: threadID) { thread in
+            thread.entries.removeAll { $0.id == id }
+        }
+        chats.saveNow()
     }
 
     // MARK: - 对话流
@@ -81,8 +109,8 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if chat.entries.isEmpty { welcome }
-                    ForEach(chat.entries) { entry in
+                    if entries.isEmpty { welcome }
+                    ForEach(entries) { entry in
                         row(entry).id(entry.id)
                     }
                     Color.clear.frame(height: 1).id(bottomAnchor)
@@ -100,9 +128,9 @@ struct ChatView: View {
                 )
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: chat.entries.count) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: chat.entries.last?.state) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: chat.entries.last?.items?.count) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: entries.count) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: entries.last?.state) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: entries.last?.items?.count) { _, _ in scrollToBottom(proxy) }
             .onAppear {
                 DispatchQueue.main.async { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
             }
@@ -200,7 +228,7 @@ struct ChatView: View {
             }
             .contextMenu {
                 Button(role: .destructive) {
-                    chat.remove(id: entry.id)
+                    removeEntry(entry.id)
                 } label: {
                     Label("删除这条", systemImage: "trash")
                 }
@@ -211,7 +239,7 @@ struct ChatView: View {
     private func imageStrip(_ names: [String]) -> some View {
         HStack(spacing: 6) {
             ForEach(names, id: \.self) { name in
-                if let image = chat.thumbnail(named: name) {
+                if let image = chats.thumbnail(named: name) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
@@ -405,7 +433,7 @@ struct ChatView: View {
             Button("收起键盘") { hideKeyboard() }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            if !chat.entries.isEmpty {
+            if !entries.isEmpty {
                 Menu {
                     Button {
                         showClearConfirm = true
@@ -422,7 +450,7 @@ struct ChatView: View {
     // MARK: - 状态与工具
 
     private var busy: Bool {
-        chat.entries.contains { $0.busy || $0.state == .thinking }
+        entries.contains { $0.busy || $0.state == .thinking }
     }
 
     private var canSend: Bool {
@@ -440,8 +468,8 @@ struct ChatView: View {
 
     private func itemsBinding(_ id: String) -> Binding<[ParsedItem]> {
         Binding(
-            get: { chat.entry(id: id)?.items ?? [] },
-            set: { newValue in chat.update(id: id) { $0.items = newValue } }
+            get: { entry(id)?.items ?? [] },
+            set: { newValue in updateEntry(id) { $0.items = newValue } }
         )
     }
 
@@ -521,14 +549,14 @@ struct ChatView: View {
         // 图片先落盘，消息里只留文件名；发给模型时才读回来转 base64
         let dataURLs = attachments.map { "data:image/jpeg;base64,\($0.data.base64EncodedString())" }
         var user = ChatEntry(role: .user, text: text)
-        user.images = attachments.compactMap { chat.saveImage($0.data) }
+        user.images = attachments.compactMap { chats.saveImage($0.data) }
         draft = ""
         attachments = []
-        chat.append(user)
+        chats.append(user, to: threadID)
 
         let thinking = ChatEntry(role: .assistant, text: "", state: .thinking)
-        chat.append(thinking)
-        let history = chat.historyText()
+        chats.append(thinking, to: threadID)
+        let history = chats.historyText(threadID: threadID)
 
         Task {
             do {
@@ -544,7 +572,7 @@ struct ChatView: View {
     }
 
     private func apply(_ items: [ParsedItem], to id: String, error: String?) {
-        chat.update(id: id) { entry in
+        updateEntry(id) { entry in
             if let error {
                 entry.state = .failed
                 entry.text = "这条没处理成功：\(error)"
@@ -561,13 +589,15 @@ struct ChatView: View {
                 entry.items = items
             }
         }
+        // 模型刚回来的东西立刻落盘，别等那 0.8 秒的合并窗口
+        chats.saveNow()
     }
 
     private func write(_ id: String) {
-        guard let entry = chat.entry(id: id), let items = entry.items else { return }
+        guard let entry = entry(id), let items = entry.items else { return }
         let selected = items.filter { $0.include }
         guard !selected.isEmpty else {
-            chat.update(id: id) { $0.result = "没有勾选任何条目。" }
+            updateEntry(id) { $0.result = "没有勾选任何条目。" }
             return
         }
 
@@ -579,7 +609,7 @@ struct ChatView: View {
         let selectedNotices = selected.filter { $0.kind == .notification }
         AppLog.info("Chat", "开始写入：待办 \(selectedTodos.count)、日程 \(selectedEvents.count)、备忘 \(selectedNotes.count)、通知 \(selectedNotices.count)")
 
-        chat.update(id: id) { $0.busy = true }
+        updateEntry(id) { $0.busy = true }
 
         Task {
             let result = await SystemWriter.writeAll(selected)
@@ -591,7 +621,7 @@ struct ChatView: View {
                 if !selectedNotes.isEmpty { summary.append("备忘 \(selectedNotes.count) 条") }
                 AppLog.info("Chat", "写入结束：成功 \(result.succeeded.count)，失败 \(result.failed.count)")
 
-                chat.update(id: id) { entry in
+                updateEntry(id) { entry in
                     entry.busy = false
                     entry.items = nil
                     entry.writtenKinds = selected.map { $0.kind.rawValue }
@@ -625,6 +655,7 @@ struct ChatView: View {
                         entry.text = "写入完成：成功 \(result.succeeded.count) 条，失败 \(result.failed.count) 条。"
                     }
                 }
+                chats.saveNow()
             }
         }
     }
@@ -816,5 +847,7 @@ extension UIImage {
 }
 
 #Preview {
-    ChatView().environmentObject(SettingsStore())
+    ChatListView()
+        .environmentObject(ChatStore())
+        .environmentObject(SettingsStore())
 }

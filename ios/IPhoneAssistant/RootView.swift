@@ -3,13 +3,14 @@ import SwiftUI
 struct RootView: View {
     @StateObject private var settings = SettingsStore()
     @StateObject private var meetings = MeetingStore()
+    @StateObject private var chats = ChatStore()
 
     var body: some View {
         TabView {
             MeetingsView()
                 .tabItem { Label("会议", systemImage: "waveform") }
-            // 对话：说一句话就把待办/日程/备忘建出来，不用自己填表
-            ChatView()
+            // 对话：说一句话就把待办/日程/备忘/提醒建出来，不用自己填表
+            ChatListView()
                 .tabItem { Label("对话", systemImage: "bubble.left.and.bubble.right") }
             // 速记：自己知道要记什么时的手动新建表单
             AssistantView()
@@ -21,6 +22,7 @@ struct RootView: View {
         }
         .environmentObject(settings)
         .environmentObject(meetings)
+        .environmentObject(chats)
     }
 }
 

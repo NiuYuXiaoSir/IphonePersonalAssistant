@@ -302,7 +302,7 @@ struct AssistantView: View {
         } header: {
             Text("备忘（\(noteStore.notes.count) 条）")
         } footer: {
-            Text("iOS 的「备忘录」没有对外写入的接口，所以备忘存在 App 里，在「文件」App 的 私人助理 目录下能看到 notes.json，也可以在这里左滑复制走。")
+            Text("系统的「备忘录」没有对外写入的接口，所以备忘存在本应用里。在「文件」的「私人助理」目录下能看到这份备忘文件，也可以在这里左滑复制走。")
         }
     }
 

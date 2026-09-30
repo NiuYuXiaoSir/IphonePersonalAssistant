@@ -73,7 +73,7 @@ final class ProbeStore: ObservableObject {
 
     func provisioningReport() -> String {
         guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision") else {
-            return "未找到 embedded.mobileprovision（说明这个包没有被真正签名）"
+            return "没找到签名描述文件（说明这个包没有被真正签名）"
         }
         guard let data = FileManager.default.contents(atPath: path),
               let raw = String(data: data, encoding: .isoLatin1) else {
@@ -82,12 +82,12 @@ final class ProbeStore: ObservableObject {
         guard let start = raw.range(of: "<?xml"),
               let end = raw.range(of: "</plist>"),
               start.lowerBound < end.upperBound else {
-            return "描述文件里没找到 plist 段"
+            return "签名文件里没找到配置段"
         }
         let xml = String(raw[start.lowerBound..<end.upperBound])
         guard let xmlData = xml.data(using: .isoLatin1),
               let plist = (try? PropertyListSerialization.propertyList(from: xmlData, format: nil)) as? [String: Any] else {
-            return "描述文件 plist 解析失败"
+            return "签名文件解析失败"
         }
 
         let name = plist["Name"] as? String ?? "-"
@@ -102,11 +102,11 @@ final class ProbeStore: ObservableObject {
         let entKeys = ent.keys.sorted().joined(separator: ", ")
 
         return """
-        名称: \(name)
-        TeamID: \(team)
-        过期: \(expiryText)
-        App Groups: \(appGroups.isEmpty ? "无（注意：这只说明本次签名没有请求它，不等于免费账号不支持）" : appGroups.joined(separator: ", "))
-        Entitlements: \(entKeys.isEmpty ? "无" : entKeys)
+        签名名称: \(name)
+        团队标识: \(team)
+        过期时间: \(expiryText)
+        应用组: \(appGroups.isEmpty ? "无（注意：这只说明本次签名没有请求它，不等于免费账号不支持）" : appGroups.joined(separator: ", "))
+        授权项: \(entKeys.isEmpty ? "无" : entKeys)
         """
     }
 
@@ -148,7 +148,7 @@ final class ProbeStore: ObservableObject {
             ]
             let rec = try AVAudioRecorder(url: url, settings: settings)
             guard rec.record() else {
-                recordStatus = "❌ AVAudioRecorder.record() 返回 false"
+                recordStatus = "❌ 录音器拒绝开始，没有再试的必要"
                 return
             }
 
@@ -298,7 +298,7 @@ final class ProbeStore: ObservableObject {
                 return
             }
             guard let source = store.defaultCalendarForNewReminders()?.source ?? store.sources.first else {
-                DispatchQueue.main.async { self?.reminderWriteStatus = "❌ 找不到可用的提醒事项来源（source）" }
+                DispatchQueue.main.async { self?.reminderWriteStatus = "❌ 找不到可用的提醒事项来源" }
                 return
             }
 
@@ -325,7 +325,7 @@ final class ProbeStore: ObservableObject {
             let reminder = EKReminder(eventStore: store)
             reminder.title = "E1 探针测试待办"
             reminder.calendar = list
-            reminder.notes = "由探针 App 于 \(Self.df.string(from: Date())) 创建。可以删掉。"
+            reminder.notes = "由探针测试于 \(Self.df.string(from: Date())) 创建。可以删掉。"
             reminder.priority = 1
             reminder.dueDateComponents = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute],
@@ -365,7 +365,7 @@ final class ProbeStore: ObservableObject {
             }
             let content = UNMutableNotificationContent()
             content.title = "助理探针"
-            content.body = "本地通知测试成功。现在把 App 切到后台或锁屏，10 秒后应该弹出来。"
+            content.body = "本地通知测试成功。现在把本应用切到后台或锁屏，10 秒后应该弹出来。"
             content.sound = .default
 
             let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 10, repeats: false)
@@ -440,7 +440,7 @@ final class ProbeStore: ObservableObject {
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             reportSavedPath = url.lastPathComponent
-            toast = "已保存到「文件」App → 我的 iPhone → 助理探针"
+            toast = "已保存到「文件」→ 我的 iPhone → 助理探针"
         } catch {
             toast = "保存失败: \(error.localizedDescription)"
         }

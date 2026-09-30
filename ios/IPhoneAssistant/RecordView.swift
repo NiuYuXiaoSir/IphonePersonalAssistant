@@ -141,7 +141,7 @@ struct RecordView: View {
     }
 
     private var footerNote: some View {
-        Text("录音期间可以锁屏、可以切到别的 App。来电或闹钟打断后会尝试自动接上。边录边转读的是已经落盘的文件，不会影响录音。")
+        Text("录音期间可以锁屏、可以切到别的应用。来电或闹钟打断后会尝试自动接上。边录边转读的是已经落盘的文件，不会影响录音。")
             .font(.caption2)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)

@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// 会议列表：按「年 → 月 → 日」三层折叠，默认只展开离现在最近的那一天。
+/// 会议列表。
 ///
-/// 一天最多一两场会，一层层压下去比平铺一长条好找：找上个月的会先点开月份，
-/// 找去年的会先点开年份，不用一路往下滚。
+/// 形态和「对话」列表保持一致：顶上一个新建按钮，下面是可以一层层收起来的分组。
+/// 分组按 年 → 月 → 日 递进——一天最多一两场会，平铺一长条不好找，
+/// 找上个月的会先点开月份、找去年的先点开年份，不用一路往下滚。
+/// 默认只展开离现在最近的那一天。
 struct MeetingsView: View {
     @EnvironmentObject private var store: MeetingStore
 
@@ -25,15 +27,13 @@ struct MeetingsView: View {
                             .padding(.vertical, 6)
                     }
                 } footer: {
-                    Text("点一下就开始录音，然后可以把手机锁屏放桌上。每分钟自动存一段，即使 App 被系统回收也只会丢最后一段。")
+                    Text("点一下就开始录音，然后可以把手机锁屏放桌上。每分钟自动存一段，即使本应用被系统回收也只会丢最后一段。")
                 }
 
                 if filtered.isEmpty {
                     emptySection
                 } else {
-                    ForEach(tree) { year in
-                        yearSection(year)
-                    }
+                    historySection
                 }
             }
             .listStyle(.insetGrouped)
@@ -45,23 +45,120 @@ struct MeetingsView: View {
             .fullScreenCover(isPresented: $showRecorder) {
                 RecordView()
             }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    if !tree.isEmpty {
-                        Menu {
-                            Button("全部展开") { expandAll() }
-                            Button("全部收起") { expanded.removeAll() }
-                        } label: {
-                            Image(systemName: "chevron.up.chevron.down")
-                        }
-                    }
-                }
-            }
             .onAppear(perform: primeExpansion)
         }
     }
 
-    // MARK: - 区块
+    // MARK: - 历史记录
+
+    private var historySection: some View {
+        Section {
+            ForEach(tree) { year in
+                groupRow(title: "\(year.year) 年",
+                         detail: "\(year.count) 场 · \(RecordingService.durationText(year.duration))",
+                         icon: "calendar",
+                         depth: 0,
+                         isExpanded: isExpanded(year.id)) {
+                    toggle(year.id)
+                }
+
+                if isExpanded(year.id) {
+                    ForEach(year.months) { month in
+                        groupRow(title: "\(month.month) 月",
+                                 detail: "\(month.count) 场",
+                                 icon: "folder",
+                                 depth: 1,
+                                 isExpanded: isExpanded(month.id)) {
+                            toggle(month.id)
+                        }
+
+                        if isExpanded(month.id) {
+                            ForEach(month.days) { day in
+                                groupRow(title: dayLabel(day.date),
+                                         detail: "\(day.meetings.count) 场 · \(RecordingService.durationText(day.duration))",
+                                         icon: "clock",
+                                         depth: 2,
+                                         isExpanded: isExpanded(day.id)) {
+                                    toggle(day.id)
+                                }
+
+                                if isExpanded(day.id) {
+                                    ForEach(day.meetings) { meeting in
+                                        NavigationLink(value: meeting.id) {
+                                            meetingRow(meeting)
+                                        }
+                                        .padding(.leading, 14)
+                                        .swipeActions {
+                                            Button(role: .destructive) {
+                                                store.delete(meeting)
+                                            } label: {
+                                                Label("删除", systemImage: "trash")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            collapseAllRow
+        } header: {
+            Text("历史记录")
+        } footer: {
+            Text("音频占用 \(formatBytes(store.storageBytes()))。左滑一条记录可以连同音频一起删掉。")
+        }
+    }
+
+    /// 和「对话」列表里那个「收起分组」一样，一眼能看到怎么收起来
+    private var collapseAllRow: some View {
+        let everythingOpen = allExpanded
+        return Button {
+            if everythingOpen {
+                expanded.removeAll()
+            } else {
+                expanded = allGroupIDs
+            }
+        } label: {
+            HStack {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                Text(everythingOpen ? "收起分组" : "展开分组")
+                Spacer()
+                Image(systemName: everythingOpen ? "chevron.up" : "chevron.down")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func groupRow(title: String,
+                          detail: String,
+                          icon: String,
+                          depth: Int,
+                          isExpanded: Bool,
+                          action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(depth == 0 ? .subheadline.weight(.semibold) : .subheadline)
+                Spacer(minLength: 8)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, CGFloat(depth) * 14)
+    }
 
     @ViewBuilder
     private var emptySection: some View {
@@ -86,66 +183,10 @@ struct MeetingsView: View {
         }
     }
 
-    private func yearSection(_ year: YearNode) -> some View {
-        DisclosureGroup(isExpanded: expansion(year.id)) {
-            ForEach(year.months) { month in
-                monthSection(month)
-            }
-        } label: {
-            groupLabel(title: "\(year.year) 年",
-                       detail: "\(year.count) 场 · \(RecordingService.durationText(year.duration))",
-                       bold: true)
-        }
-    }
-
-    private func monthSection(_ month: MonthNode) -> some View {
-        DisclosureGroup(isExpanded: expansion(month.id)) {
-            ForEach(month.days) { day in
-                daySection(day)
-            }
-        } label: {
-            groupLabel(title: "\(month.month) 月",
-                       detail: "\(month.count) 场",
-                       bold: false)
-        }
-    }
-
-    private func daySection(_ day: DayNode) -> some View {
-        DisclosureGroup(isExpanded: expansion(day.id)) {
-            ForEach(day.meetings) { meeting in
-                NavigationLink(value: meeting.id) {
-                    meetingRow(meeting)
-                }
-                .swipeActions {
-                    Button(role: .destructive) {
-                        store.delete(meeting)
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                    }
-                }
-            }
-        } label: {
-            groupLabel(title: dayLabel(day.date),
-                       detail: "\(day.meetings.count) 场 · \(RecordingService.durationText(day.duration))",
-                       bold: false)
-        }
-    }
-
-    private func groupLabel(title: String, detail: String, bold: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .font(bold ? .subheadline.weight(.semibold) : .subheadline)
-            Spacer()
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private func meetingRow(_ m: Meeting) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(m.title)
-                .font(.subheadline.weight(.semibold))
+                .font(.subheadline.weight(.medium))
                 .lineLimit(2)
 
             HStack(spacing: 6) {
@@ -186,15 +227,39 @@ struct MeetingsView: View {
 
     // MARK: - 展开状态
 
-    private func expansion(_ id: String) -> Binding<Bool> {
-        Binding(
-            get: { searchActive || expanded.contains(id) },
-            set: { newValue in
-                // 搜索时强制全展开，免得搜索结果藏在折叠节点里
-                guard !searchActive else { return }
-                if newValue { expanded.insert(id) } else { expanded.remove(id) }
+    private var searchActive: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func isExpanded(_ id: String) -> Bool {
+        searchActive || expanded.contains(id)
+    }
+
+    private func toggle(_ id: String) {
+        // 搜索时强制全展开，免得搜索结果藏在折叠节点里
+        guard !searchActive else { return }
+        if expanded.contains(id) {
+            expanded.remove(id)
+        } else {
+            expanded.insert(id)
+        }
+    }
+
+    private var allGroupIDs: Set<String> {
+        var ids: Set<String> = []
+        for year in tree {
+            ids.insert(year.id)
+            for month in year.months {
+                ids.insert(month.id)
+                for day in month.days { ids.insert(day.id) }
             }
-        )
+        }
+        return ids
+    }
+
+    private var allExpanded: Bool {
+        let ids = allGroupIDs
+        return !ids.isEmpty && ids.isSubset(of: expanded)
     }
 
     /// 首次显示时展开离现在最近的那一天，让列表一打开就有内容可看
@@ -204,23 +269,7 @@ struct MeetingsView: View {
         expanded = [yearID(newest.startedAt), monthID(newest.startedAt), dayID(newest.startedAt)]
     }
 
-    private func expandAll() {
-        var ids: Set<String> = []
-        for year in tree {
-            ids.insert(year.id)
-            for month in year.months {
-                ids.insert(month.id)
-                for day in month.days { ids.insert(day.id) }
-            }
-        }
-        expanded = ids
-    }
-
     // MARK: - 数据
-
-    private var searchActive: Bool {
-        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     private var filtered: [Meeting] {
         let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)

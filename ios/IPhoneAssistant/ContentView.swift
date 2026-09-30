@@ -42,11 +42,11 @@ struct DiagnosticsView: View {
             LabeledContent("首次安装", value: store.firstLaunch.formatted(date: .abbreviated, time: .shortened))
             LabeledContent("已安装", value: "\(store.installDays) 天")
             LabeledContent("累计启动", value: "\(store.launchCount) 次")
-            Text("「累计启动」是判断数据是否保留的关键：等免费签名过期、用同一个 Apple ID 重新签名安装之后，如果这个数字接着往上涨（而不是变回 1），说明覆盖安装不会清数据。")
+            Text("「累计启动」是判断数据是否保留的关键：等免费签名过期、用同一个苹果账号重新签名安装之后，如果这个数字接着往上涨（而不是变回 1），说明覆盖安装不会清数据。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } header: {
-            Text("① 装机链路（E1 核心）")
+            Text("① 装机链路")
         }
     }
 
@@ -106,7 +106,7 @@ struct DiagnosticsView: View {
             Button("测试写入待办到「AI助理」列表") { store.testReminderWrite() }
             Text(store.reminderWriteStatus).font(.footnote).foregroundStyle(.secondary)
         } header: {
-            Text("④ 日历与提醒事项（EventKit）")
+            Text("④ 日历与提醒事项")
         } footer: {
             Text("第三项走的是和「速记」页保存待办完全相同的写入路径。")
         }
@@ -130,7 +130,7 @@ struct DiagnosticsView: View {
                 UIPasteboard.general.string = AppLog.exportText()
                 store.toast = "日志已复制到剪贴板"
             }
-            Button("导出日志到「文件」App") {
+            Button("导出日志到「文件」") {
                 let url = AppLog.directory().appendingPathComponent("export-\(Int(Date().timeIntervalSince1970)).txt")
                 do {
                     try AppLog.exportText().write(to: url, atomically: true, encoding: .utf8)
@@ -149,7 +149,7 @@ struct DiagnosticsView: View {
         } header: {
             Text("⑥ 运行日志")
         } footer: {
-            Text("没有 Mac 就没有 Xcode 控制台，出问题时这就是唯一的线索。把这段贴给我。")
+            Text("这台手机上装不了开发工具，出问题时这段日志就是唯一的线索。把它发给我就行。")
         }
     }
 
@@ -158,7 +158,7 @@ struct DiagnosticsView: View {
     private var reportSection: some View {
         Section {
             Button("复制报告到剪贴板") { store.copyReport() }
-            Button("保存报告到「文件」App") { store.saveReportToFiles() }
+            Button("保存报告到「文件」") { store.saveReportToFiles() }
             if !store.reportSavedPath.isEmpty {
                 Text("已保存：\(store.reportSavedPath)")
                     .font(.footnote)
@@ -168,7 +168,7 @@ struct DiagnosticsView: View {
                 .font(.system(.caption2, design: .monospaced))
                 .textSelection(.enabled)
         } header: {
-            Text("⑦ E1 探针报告")
+            Text("⑦ 探针报告")
         } footer: {
             Text("把报告贴给我，我就能判断这条链路能不能支撑正式开发。")
         }
