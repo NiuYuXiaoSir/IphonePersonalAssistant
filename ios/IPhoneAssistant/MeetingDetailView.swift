@@ -3,19 +3,24 @@ import UIKit
 
 /// 会议详情。
 ///
-/// 布局参考了录音类 App 的通用形态：标题和播放条钉在顶部，下面用分页切换
-/// 「转写 / 纪要 / 录音 / 导出」。比起原来一长条列表，最大的区别是
-/// 播放器一直在视野里——边听边看文字是会后整理最常用的动作。
+/// 版式照元宝的记录页：上半截是深色的——标题栏 + 一条浮着的播放胶囊，
+/// 下半截是一张米黄的「纸」，纸的上沿压着四个文件夹标签（转写 / 纪要 / 录音 / 导出），
+/// 选中的那个和纸同色，看起来是连成一片的。
+///
+/// 播放条一直在视野里：边听边看文字是会后整理最常用的动作。
 struct MeetingDetailView: View {
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var settings: SettingsStore
     @Environment(\.dismiss) private var dismiss
+    /// 生成纪要是花钱的动作，余额摆在顶上随时能看到
+    @ObservedObject private var balance = BalanceStore.shared
 
     let meetingID: String
 
     @StateObject private var player = MeetingPlayer()
 
-    @State private var tab: DetailTab = .transcript
+    /// 用索引而不是枚举，方便直接喂给文件夹标签
+    @State private var tab = 0
     @State private var titleDraft = ""
     @State private var transcriptDraft = ""
     @State private var loadedDraft = false
@@ -26,14 +31,8 @@ struct MeetingDetailView: View {
     @State private var showRename = false
     @State private var showDeleteConfirm = false
 
-    private enum DetailTab: String, CaseIterable, Identifiable {
-        case transcript = "转写"
-        case summary = "纪要"
-        case audio = "录音"
-        case export = "导出"
-
-        var id: String { rawValue }
-    }
+    private let tabTitles = ["转写", "纪要", "录音", "导出"]
+    private let tabIcons = ["text.alignleft", "wand.and.stars", "waveform", "square.and.arrow.up"]
 
     private var meeting: Meeting? { store.meeting(id: meetingID) }
 
@@ -41,18 +40,21 @@ struct MeetingDetailView: View {
         Group {
             if let m = meeting {
                 VStack(spacing: 0) {
-                    header(m)
-                    tabPicker
-                    Divider()
-                    content(m)
+                    playerPill
+                        .padding(.horizontal, 16)
+                    segmentHint
+                        .padding(.top, 6)
+                    paperSheet(m)
+                        .padding(.top, 12)
                 }
             } else {
                 missingView
             }
         }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle(meeting?.title ?? "会议")
+        .background(YBColor.bg)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar { topBarMenu }
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
@@ -63,6 +65,7 @@ struct MeetingDetailView: View {
         .onAppear {
             loadDrafts()
             loadPlayer()
+            balance.refreshIfStale(settings: settings)
         }
         .onDisappear {
             player.stop()
@@ -100,133 +103,134 @@ struct MeetingDetailView: View {
         }
     }
 
-    // MARK: - 顶部
+    // MARK: - 深色区：播放条
 
-    private func header(_ m: Meeting) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(m.title)
-                        .font(.headline)
-                        .lineLimit(2)
-                    Text(metaLine(m))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var playerPill: some View {
+        HStack(spacing: 10) {
+            Button {
+                player.togglePlay()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(player.loaded ? Color.white : YBColor.textTertiary)
+                    .frame(width: 34, height: 34)
+                    .background(YBColor.surfaceHi, in: Circle())
+            }
+            .buttonStyle(YBPressStyle())
+            .disabled(!player.loaded)
+
+            Text(clock(isScrubbing ? scrubValue : player.elapsedTotal))
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.primary)
+                .frame(width: 46, alignment: .leading)
+
+            YBScrubber(value: $scrubValue, total: player.totalDuration) { editing in
+                isScrubbing = editing
+                player.setScrubbing(editing)
+            }
+            .disabled(!player.loaded)
+
+            Text(player.loaded
+                 ? "-" + clock(max(player.totalDuration - (isScrubbing ? scrubValue : player.elapsedTotal), 0))
+                 : "无音频")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(YBColor.textSecondary)
+                .frame(width: 52, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 52)
+        .background(YBColor.surface, in: Capsule())
+    }
+
+    @ViewBuilder
+    private var segmentHint: some View {
+        if player.loaded && player.isPlaying {
+            Text("正在播第 \(min(player.currentIndex + 1, player.segmentCount))/\(player.segmentCount) 段")
+                .font(.system(size: 11))
+                .foregroundStyle(YBColor.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    // MARK: - 纸面
+
+    private func paperSheet(_ m: Meeting) -> some View {
+        VStack(spacing: 0) {
+            YBFolderTabs(titles: tabTitles, icons: tabIcons, index: $tab)
+            Group {
+                switch tab {
+                case 0: transcriptTab(m)
+                case 1: MeetingSummaryPanel(meetingID: meetingID) { paperHeader(m) }
+                case 2: audioTab(m)
+                default: exportTab(m)
                 }
-                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(YBColor.paper)
+            .clipShape(YBRoundedCorner(radius: 14, corners: [.topRight, .bottomLeft, .bottomRight]))
+        }
+    }
+
+    /// 纸上那行文档抬头：标题 + 时间 + 改名
+    private func paperHeader(_ m: Meeting) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 10) {
+                Text(m.title)
+                    .font(YBFont.docTitle)
+                    .foregroundStyle(YBColor.paperInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
                 Button {
                     titleDraft = m.title
                     showRename = true
                 } label: {
                     Image(systemName: "pencil")
-                        .font(.caption)
+                        .font(.system(size: 15))
+                        .foregroundStyle(YBColor.paperInkSoft)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(YBPressStyle())
             }
-
-            playerBar
+            Text(metaLine(m))
+                .font(YBFont.docMeta)
+                .foregroundStyle(YBColor.paperInkSoft)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
         .padding(.bottom, 12)
-        .background(Color(.secondarySystemGroupedBackground))
-    }
-
-    private var playerBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                player.togglePlay()
-            } label: {
-                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 40))
-                    .foregroundStyle(player.loaded ? Color.accentColor : Color.secondary)
-            }
-            .buttonStyle(.plain)
-            .disabled(!player.loaded)
-
-            VStack(spacing: 2) {
-                Slider(value: $scrubValue, in: 0...max(player.totalDuration, 1)) { editing in
-                    isScrubbing = editing
-                    player.setScrubbing(editing)
-                }
-                .disabled(!player.loaded)
-
-                HStack(spacing: 0) {
-                    Text(clock(isScrubbing ? scrubValue : player.elapsedTotal))
-                    Spacer()
-                    if player.loaded {
-                        Text("第 \(min(player.currentIndex + 1, player.segmentCount))/\(player.segmentCount) 段")
-                    } else {
-                        Text("没有音频")
-                    }
-                    Spacer()
-                    Text("-" + clock(max(player.totalDuration - (isScrubbing ? scrubValue : player.elapsedTotal), 0)))
-                }
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var tabPicker: some View {
-        Picker("", selection: $tab) {
-            ForEach(DetailTab.allCases) { item in
-                Text(item.rawValue).tag(item)
-            }
-        }
-        .pickerStyle(.segmented)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color(.secondarySystemGroupedBackground))
     }
 
     private var missingView: some View {
         VStack(spacing: 8) {
             Image(systemName: "questionmark.folder")
                 .font(.largeTitle)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(YBColor.textSecondary)
             Text("记录不存在，可能已经被删了")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 14))
+                .foregroundStyle(YBColor.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    @ViewBuilder
-    private func content(_ m: Meeting) -> some View {
-        switch tab {
-        case .transcript:
-            transcriptTab(m)
-        case .summary:
-            MeetingSummaryPanel(meetingID: meetingID)
-        case .audio:
-            audioTab(m)
-        case .export:
-            exportTab(m)
-        }
     }
 
     // MARK: - 转写
 
     private func transcriptTab(_ m: Meeting) -> some View {
         VStack(spacing: 0) {
+            paperHeader(m)
+            Rectangle().fill(YBColor.paperLine).frame(height: 1)
+
             ZStack(alignment: .topLeading) {
-                TextEditor(text: $transcriptDraft)
-                    .font(.footnote)
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
+                YBPaperTextEditor(text: $transcriptDraft)
 
                 if transcriptDraft.isEmpty {
                     Text("还没有文字。可以把会议记录粘进来，也可以点下面的「自动转写」，把 \(m.segments.count) 段录音逐段转成文字。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 20)
+                        .font(.system(size: 15))
+                        .foregroundStyle(YBColor.paperInkSoft)
+                        .padding(.horizontal, 19)
                         .padding(.top, 16)
                         .allowsHitTesting(false)
                 }
             }
-            .background(Color(.systemBackground))
 
             transcriptBar
         }
@@ -238,113 +242,121 @@ struct MeetingDetailView: View {
                 TranscriptionView(meetingID: meetingID)
             } label: {
                 Label("自动转写", systemImage: "text.bubble")
-                    .font(.footnote)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(YBPaperButtonStyle())
 
             Button {
                 saveTranscript(silently: false)
             } label: {
                 Label("保存", systemImage: "square.and.arrow.down")
-                    .font(.footnote)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(YBPaperButtonStyle())
 
             Spacer(minLength: 0)
 
             Button {
                 saveTranscript(silently: true)
-                tab = .summary
+                tab = 1
             } label: {
                 Label("生成纪要", systemImage: "wand.and.stars")
-                    .font(.footnote)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(YBPaperPrimaryButtonStyle())
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
+        .background(YBColor.paperHi)
     }
 
     // MARK: - 录音段
 
     private func audioTab(_ m: Meeting) -> some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 12) {
                 if m.segments.isEmpty {
                     Text("这场会议没有留下音频段。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 40)
+                        .font(.system(size: 14))
+                        .foregroundStyle(YBColor.paperInkSoft)
+                        .padding(.top, 20)
                 } else {
-                    ForEach(Array(m.segments.enumerated()), id: \.element.id) { index, segment in
-                        segmentRow(index: index, segment: segment)
+                    ForEach(m.segments.indices, id: \.self) { index in
+                        segmentCard(index: index, segment: m.segments[index])
                     }
                 }
 
-                if !m.markers.isEmpty {
-                    markersCard(m.markers)
-                }
+                if !m.markers.isEmpty { markersCard(m.markers) }
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
         }
     }
 
-    private func segmentRow(index: Int, segment: Meeting.AudioSegment) -> some View {
+    /// 一段录音一张卡，形态照元宝的录音卡：标题行 + 时长 + 波形 + 播放键
+    private func segmentCard(index: Int, segment: Meeting.AudioSegment) -> some View {
         let active = player.loaded && player.currentIndex == index
-        return HStack(spacing: 12) {
-            Image(systemName: active && player.isPlaying ? "waveform" : "play.fill")
-                .font(.caption)
-                .frame(width: 28, height: 28)
-                .background(active ? Color.accentColor : Color.secondary.opacity(0.12), in: Circle())
-                .foregroundStyle(active ? Color.white : Color.accentColor)
 
-            VStack(alignment: .leading, spacing: 3) {
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform.circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(YBColor.paperInkSoft)
                 Text("第 \(index + 1) 段")
-                    .font(.subheadline.weight(.medium))
-                Text("从 \(clock(segment.startOffset)) 开始 · 时长 \(String(format: "%.0f", segment.durationSeconds)) 秒")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(YBColor.paperInk)
+                Spacer(minLength: 8)
+                Text(String(format: "%.0f 秒", segment.durationSeconds))
+                    .font(.system(size: 12))
+                    .foregroundStyle(YBColor.paperInkSoft)
             }
 
-            Spacer(minLength: 0)
+            HStack(spacing: 12) {
+                Text(clock(segment.startOffset))
+                    .font(.system(size: 16, weight: .medium, design: .monospaced))
+                    .foregroundStyle(YBColor.paperInk)
 
-            Text(segment.fileName)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                YBWaveform(seed: segment.fileName,
+                           tint: active ? YBColor.paperInkSoft : YBColor.paperLine,
+                           height: 22)
+
+                Spacer(minLength: 0)
+
+                Button {
+                    if active && player.isPlaying {
+                        player.pause()
+                    } else {
+                        player.play(from: index)
+                    }
+                } label: {
+                    Image(systemName: active && player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(YBColor.paper)
+                        .frame(width: 34, height: 34)
+                        .background(active ? YBColor.accent : YBColor.paperInk.opacity(0.85), in: Circle())
+                }
+                .buttonStyle(YBPressStyle())
+            }
         }
-        .padding(12)
-        .background(Color(.secondarySystemGroupedBackground),
+        .padding(14)
+        .background(YBColor.paperHi,
                     in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(active ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.05),
-                              lineWidth: 1)
+                .strokeBorder(active ? YBColor.accent.opacity(0.6) : Color.clear, lineWidth: 1.5)
         )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if active && player.isPlaying {
-                player.pause()
-            } else {
-                player.play(from: index)
-            }
-        }
     }
 
     private func markersCard(_ markers: [Double]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("录制时打的标记（\(markers.count) 个）", systemImage: "flag")
-                .font(.subheadline.weight(.medium))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(YBColor.paperInk)
             Text(markers.map { clock($0) }.joined(separator: "、"))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 14))
+                .foregroundStyle(YBColor.paperInkSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(Color(.secondarySystemGroupedBackground),
+        .background(YBColor.paperHi,
                     in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
@@ -353,26 +365,24 @@ struct MeetingDetailView: View {
     private func exportTab(_ m: Meeting) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                card("导出", icon: "square.and.arrow.up") {
+                paperCard("导出", icon: "square.and.arrow.up") {
                     Button {
                         exportMarkdown(m)
                     } label: {
                         Label("导出为文本文件到「文件」", systemImage: "doc.text")
-                            .font(.footnote)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(YBPaperButtonStyle())
 
                     Button {
                         UIPasteboard.general.string = markdown(m)
                         toast = "已复制到剪贴板"
                     } label: {
                         Label("复制全部内容到剪贴板", systemImage: "doc.on.doc")
-                            .font(.footnote)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(YBPaperButtonStyle())
                 }
 
-                card("这场会议", icon: "info.circle") {
+                paperCard("这场会议", icon: "info.circle") {
                     infoLine("开始", m.startedAt.formatted(date: .numeric, time: .shortened))
                     infoLine("时长", RecordingService.durationText(m.durationSeconds))
                     infoLine("录音段", "\(m.segments.count) 段")
@@ -382,35 +392,40 @@ struct MeetingDetailView: View {
                 }
 
                 Text("免费签名只给 7 天，也没有云端同步。定期导出是唯一的保险，别等签名过期了才想起来。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(YBColor.paperInkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
         }
     }
 
-    private func card<Content: View>(_ title: String,
-                                     icon: String,
-                                     @ViewBuilder content: () -> Content) -> some View {
+    private func paperCard<Content: View>(_ title: String,
+                                          icon: String,
+                                          @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label(title, systemImage: icon)
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(YBColor.paperInk)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(Color(.secondarySystemGroupedBackground),
+        .background(YBColor.paperHi,
                     in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func infoLine(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13))
+                .foregroundStyle(YBColor.paperInkSoft)
                 .frame(width: 48, alignment: .leading)
             Text(value)
-                .font(.caption)
+                .font(.system(size: 13))
+                .foregroundStyle(YBColor.paperInk)
             Spacer(minLength: 0)
         }
     }
@@ -432,7 +447,8 @@ struct MeetingDetailView: View {
 
     @ToolbarContentBuilder
     private var topBarMenu: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            if balance.supports(settings) { balanceChip }
             Menu {
                 Button {
                     titleDraft = meeting?.title ?? ""
@@ -458,6 +474,22 @@ struct MeetingDetailView: View {
                 Image(systemName: "ellipsis.circle")
             }
         }
+    }
+
+    /// 顶上的余额胶囊：点一下重新查
+    private var balanceChip: some View {
+        YBBalanceChip(text: balance.chipText,
+                      icon: balance.chipIcon,
+                      tint: balanceTint,
+                      busy: balance.isRefreshing) {
+            balance.refresh(settings: settings)
+        }
+    }
+
+    private var balanceTint: Color {
+        if balance.isLow { return YBColor.warning }
+        if balance.isUnavailable { return YBColor.textSecondary }
+        return Color.primary
     }
 
     // MARK: - 动作
@@ -510,10 +542,10 @@ struct MeetingDetailView: View {
 
     private func metaLine(_ m: Meeting) -> String {
         var parts: [String] = []
-        parts.append(m.startedAt.formatted(date: .abbreviated, time: .shortened))
+        parts.append(m.startedAt.formatted(date: .numeric, time: .shortened))
         parts.append(RecordingService.durationText(m.durationSeconds))
         parts.append("\(m.segments.count) 段录音")
-        if m.status == "recovered" { parts.append("⚠️ 意外中断恢复") }
+        if m.status == "recovered" { parts.append("意外中断恢复") }
         return parts.joined(separator: " · ")
     }
 

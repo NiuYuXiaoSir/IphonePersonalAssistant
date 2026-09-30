@@ -41,6 +41,9 @@ struct TranscriptionView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(YBColor.bg)
+        .listRowBackground(YBColor.surface)
         .navigationTitle("语音转写")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: refresh)

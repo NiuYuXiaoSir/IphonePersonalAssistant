@@ -18,6 +18,9 @@ struct DiagnosticsView: View {
                 loggerSection
                 reportSection
             }
+            .scrollContentBackground(.hidden)
+            .background(YBColor.bg)
+            .listRowBackground(YBColor.surface)
             .navigationTitle("诊断")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
@@ -74,7 +77,7 @@ struct DiagnosticsView: View {
                          : "开始录音测试")
                     Spacer()
                 }
-                .foregroundStyle(store.isRecording ? Color.red : Color.accentColor)
+                .foregroundStyle(store.isRecording ? YBColor.danger : YBColor.accent)
             }
 
             Text(store.recordStatus)

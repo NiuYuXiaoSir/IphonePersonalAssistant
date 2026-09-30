@@ -2,49 +2,42 @@ import SwiftUI
 
 /// 会议列表。
 ///
-/// 形态和「对话」列表保持一致：顶上一个新建按钮，下面是可以一层层收起来的分组。
-/// 分组按 年 → 月 → 日 递进——一天最多一两场会，平铺一长条不好找，
-/// 找上个月的会先点开月份、找去年的先点开年份，不用一路往下滚。
-/// 默认只展开离现在最近的那一天。
+/// 版式照元宝的列表页：大标题 → 搜索框 → 一整块「开始记录会议」的蓝字卡片 →
+/// 一行灰色说明 → 「历史记录」分组。分组内部是 年 → 月 → 日 三级折叠，
+/// 一天最多一两场会，平铺一长条不好找；默认只展开离现在最近的那一天。
 struct MeetingsView: View {
     @EnvironmentObject private var store: MeetingStore
     @ObservedObject private var router = AppRouter.shared
+    @ObservedObject private var history = YBSearchHistory.meetings
 
+    @State private var path: [String] = []
     @State private var showRecorder = false
     @State private var query = ""
+    @State private var showingSearch = false
+    @FocusState private var searchFocused: Bool
     @State private var expanded: Set<String> = []
     @State private var didPrimeExpansion = false
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
-                Section {
-                    Button {
-                        showRecorder = true
-                    } label: {
-                        Label("开始记录会议", systemImage: "record.circle")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 6)
-                    }
-                } footer: {
-                    Text("点一下就开始录音，然后可以把手机锁屏放桌上。每分钟自动存一段，即使本应用被系统回收也只会丢最后一段。")
-                }
-
-                if filtered.isEmpty {
-                    emptySection
+                searchRow
+                if searchActive {
+                    searchResultsContent
                 } else {
-                    historySection
+                    homeContent
                 }
             }
-            .listStyle(.insetGrouped)
+            .ybPageList()
             .navigationTitle("会议")
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索标题或会议文字")
             .navigationDestination(for: String.self) { id in
                 MeetingDetailView(meetingID: id)
             }
             .fullScreenCover(isPresented: $showRecorder) {
                 RecordView()
+            }
+            .onChange(of: searchFocused) { _, focused in
+                if focused { showingSearch = true }
             }
             .onAppear {
                 primeExpansion()
@@ -54,59 +47,226 @@ struct MeetingsView: View {
         }
     }
 
-    /// 长按图标点了「开始录音」：直接把这个页面的录音弹窗拉起来
+    /// 长按图标点了「开始录音」：直接把这个页面的录音页拉起来
     private func consumeShortcut() {
         guard router.pending == .record else { return }
         router.pending = nil
         DispatchQueue.main.async { showRecorder = true }
     }
 
-    // MARK: - 历史记录
+    // MARK: - 搜索
 
-    private var historySection: some View {
-        Section {
-            ForEach(tree) { year in
-                groupRow(title: "\(year.year) 年",
-                         detail: "\(year.count) 场 · \(RecordingService.durationText(year.duration))",
-                         icon: "calendar",
-                         depth: 0,
-                         isExpanded: isExpanded(year.id)) {
-                    toggle(year.id)
-                }
+    private var searchActive: Bool {
+        showingSearch || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
-                if isExpanded(year.id) {
-                    ForEach(year.months) { month in
-                        groupRow(title: "\(month.month) 月",
-                                 detail: "\(month.count) 场",
-                                 icon: "folder",
-                                 depth: 1,
-                                 isExpanded: isExpanded(month.id)) {
-                            toggle(month.id)
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var searchRow: some View {
+        HStack(spacing: 12) {
+            YBSearchField(placeholder: "搜索标题或会议文字",
+                          text: $query,
+                          focused: $searchFocused,
+                          onSubmit: { history.add(trimmedQuery) })
+            if searchActive {
+                Button("取消") { cancelSearch() }
+                    .font(.system(size: 16))
+                    .foregroundStyle(YBColor.accent)
+            }
+        }
+        .padding(.top, 4)
+        .ybRow()
+    }
+
+    private func cancelSearch() {
+        searchFocused = false
+        showingSearch = false
+        query = ""
+    }
+
+    @ViewBuilder
+    private var searchResultsContent: some View {
+        if trimmedQuery.isEmpty {
+            if !history.items.isEmpty {
+                Section {
+                    historyChips
+                } header: {
+                    YBPinnedHeader("历史记录") {
+                        Button {
+                            history.clear()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 15))
+                                .foregroundStyle(YBColor.textSecondary)
                         }
+                        .buttonStyle(YBPressStyle())
+                    }
+                }
+            }
+        } else {
+            let results = searchResults
+            if results.isEmpty {
+                Section {
+                    YBHint(text: "没有匹配「\(trimmedQuery)」的记录。搜索会同时匹配标题和会议文字。",
+                           icon: "magnifyingglass")
+                        .padding(.top, 12)
+                        .ybRow(horizontal: 0)
+                }
+            } else {
+                Section {
+                    ForEach(results) { row in
+                        rowView(row)
+                    }
+                } header: {
+                    YBPinnedHeader("找到 \(results.count) 场")
+                }
+            }
+        }
+    }
 
+    private var historyChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(history.items, id: \.self) { keyword in
+                    YBTag(text: keyword) {
+                        query = keyword
+                        history.add(keyword)
+                    }
+                }
+            }
+            .padding(.horizontal, YBMetric.pagePad)
+            .padding(.bottom, YBMetric.rowGap)
+        }
+        .ybRow(horizontal: 0)
+    }
+
+    // MARK: - 正常态
+
+    @ViewBuilder
+    private var homeContent: some View {
+        Section {
+            YBActionCard(title: "开始记录会议", icon: "record.circle") {
+                showRecorder = true
+            }
+            .padding(.top, 4)
+            .ybRow()
+
+            YBHint(text: "点一下就开始录音，然后可以把手机锁屏放桌上。每分钟自动存一段，即使本应用被系统回收也只会丢最后一段。")
+                .ybRow(horizontal: 0)
+        }
+
+        Section {
+            if displayRows.isEmpty {
+                YBRow(title: "还没有会议记录",
+                      subtitle: "点上面的「开始记录会议」录第一场。",
+                      position: .only)
+                    .ybRow(bottom: YBMetric.rowGap)
+            } else {
+                ForEach(displayRows) { row in
+                    rowView(row)
+                }
+            }
+
+            YBHint(text: historyFooter)
+                .ybRow(horizontal: 0)
+                .padding(.bottom, 24)
+        } header: {
+            // 滚动时钉在顶上，和「对话」列表里的今天/本月一个行为
+            YBPinnedHeader("历史记录")
+        }
+    }
+
+    private var historyFooter: String {
+        var text = "音频占用 \(formatBytes(store.storageBytes()))。左滑一条记录可以连同音频一起删掉。"
+        if !displayRows.isEmpty { text += "点年份、月份可以一层层展开或收起。" }
+        return text
+    }
+
+    // MARK: - 行的组装
+    //
+    // 折叠状态下哪些行出现是会变的，所以先把要显示的行摊平成一个数组，
+    // 再回头给首尾两行标上圆角。这样卡片的分隔线和圆角永远是对的。
+
+    private struct DisplayRow: Identifiable {
+        var id: String
+        var title: String
+        var subtitle: String?
+        var detail: String?
+        var icon: String?
+        var indent: CGFloat
+        var chevron: String?
+        var position: YBRowPosition = .middle
+        var groupID: String?
+        var meetingID: String?
+
+        init(groupID: String, title: String, detail: String, icon: String,
+             indent: CGFloat, chevron: String) {
+            self.id = groupID
+            self.groupID = groupID
+            self.title = title
+            self.detail = detail
+            self.icon = icon
+            self.indent = indent
+            self.chevron = chevron
+            self.subtitle = nil
+            self.meetingID = nil
+        }
+
+        init(meetingID: String, title: String, subtitle: String, indent: CGFloat) {
+            self.id = meetingID
+            self.meetingID = meetingID
+            self.title = title
+            self.subtitle = subtitle
+            self.detail = nil
+            self.icon = nil
+            self.indent = indent
+            self.chevron = "chevron.right"
+            self.groupID = nil
+        }
+    }
+
+    private var displayRows: [DisplayRow] {
+        var rows: [DisplayRow] = []
+
+        if searchActive {
+            for meeting in searchResults {
+                rows.append(DisplayRow(meetingID: meeting.id,
+                                       title: meeting.title,
+                                       subtitle: metaLine(meeting),
+                                       indent: 0))
+            }
+        } else if !tree.isEmpty {
+            for year in tree {
+                rows.append(DisplayRow(groupID: year.id,
+                                       title: "\(year.year) 年",
+                                       detail: "\(year.count) 场 · \(RecordingService.durationText(year.duration))",
+                                       icon: "calendar",
+                                       indent: 0,
+                                       chevron: isExpanded(year.id) ? "chevron.up" : "chevron.down"))
+                if isExpanded(year.id) {
+                    for month in year.months {
+                        rows.append(DisplayRow(groupID: month.id,
+                                               title: "\(month.month) 月",
+                                               detail: "\(month.count) 场",
+                                               icon: "folder",
+                                               indent: 16,
+                                               chevron: isExpanded(month.id) ? "chevron.up" : "chevron.down"))
                         if isExpanded(month.id) {
-                            ForEach(month.days) { day in
-                                groupRow(title: dayLabel(day.date),
-                                         detail: "\(day.meetings.count) 场 · \(RecordingService.durationText(day.duration))",
-                                         icon: "clock",
-                                         depth: 2,
-                                         isExpanded: isExpanded(day.id)) {
-                                    toggle(day.id)
-                                }
-
+                            for day in month.days {
+                                rows.append(DisplayRow(groupID: day.id,
+                                                       title: dayLabel(day.date),
+                                                       detail: "\(day.meetings.count) 场 · \(RecordingService.durationText(day.duration))",
+                                                       icon: "clock",
+                                                       indent: 32,
+                                                       chevron: isExpanded(day.id) ? "chevron.up" : "chevron.down"))
                                 if isExpanded(day.id) {
-                                    ForEach(day.meetings) { meeting in
-                                        NavigationLink(value: meeting.id) {
-                                            meetingRow(meeting)
-                                        }
-                                        .padding(.leading, 14)
-                                        .swipeActions {
-                                            Button(role: .destructive) {
-                                                store.delete(meeting)
-                                            } label: {
-                                                Label("删除", systemImage: "trash")
-                                            }
-                                        }
+                                    for meeting in day.meetings {
+                                        rows.append(DisplayRow(meetingID: meeting.id,
+                                                               title: meeting.title,
+                                                               subtitle: metaLine(meeting),
+                                                               indent: 46))
                                     }
                                 }
                             }
@@ -115,133 +275,76 @@ struct MeetingsView: View {
                 }
             }
 
-            collapseAllRow
-        } header: {
-            Text("历史记录")
-        } footer: {
-            Text("音频占用 \(formatBytes(store.storageBytes()))。左滑一条记录可以连同音频一起删掉。")
+            rows.append(DisplayRow(groupID: Self.collapseID,
+                                   title: allExpanded ? "收起分组" : "展开分组",
+                                   detail: "",
+                                   icon: "folder",
+                                   indent: 0,
+                                   chevron: allExpanded ? "chevron.up" : "chevron.down"))
         }
-    }
 
-    /// 和「对话」列表里那个「收起分组」一样，一眼能看到怎么收起来
-    private var collapseAllRow: some View {
-        let everythingOpen = allExpanded
-        return Button {
-            if everythingOpen {
-                expanded.removeAll()
-            } else {
-                expanded = allGroupIDs
-            }
-        } label: {
-            HStack {
-                Image(systemName: "folder")
-                    .foregroundStyle(.secondary)
-                Text(everythingOpen ? "收起分组" : "展开分组")
-                Spacer()
-                Image(systemName: everythingOpen ? "chevron.up" : "chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        let count = rows.count
+        for index in rows.indices {
+            rows[index].position = Self.position(index: index, count: count)
         }
-    }
-
-    private func groupRow(title: String,
-                          detail: String,
-                          icon: String,
-                          depth: Int,
-                          isExpanded: Bool,
-                          action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Text(title)
-                    .font(depth == 0 ? .subheadline.weight(.semibold) : .subheadline)
-                Spacer(minLength: 8)
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.leading, CGFloat(depth) * 14)
+        return rows
     }
 
     @ViewBuilder
-    private var emptySection: some View {
-        Section {
-            if query.isEmpty {
-                Text("还没有会议记录")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("没有匹配「\(query)」的记录")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+    private func rowView(_ row: DisplayRow) -> some View {
+        if let meetingID = row.meetingID {
+            YBRow(title: row.title,
+                  subtitle: row.subtitle,
+                  indent: row.indent,
+                  chevron: row.chevron,
+                  position: row.position) {
+                path.append(meetingID)
             }
-        } header: {
-            Text("历史记录")
-        } footer: {
-            if !query.isEmpty {
-                Text("搜索会同时匹配标题和会议文字。")
-            } else if !store.meetings.isEmpty {
-                Text("音频占用 \(formatBytes(store.storageBytes()))。")
+            .swipeActions {
+                Button(role: .destructive) {
+                    if let meeting = store.meeting(id: meetingID) { store.delete(meeting) }
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
             }
+            .ybRow(bottom: row.position == .last ? YBMetric.rowGap : 0)
+        } else {
+            YBRow(title: row.title,
+                  detail: row.detail,
+                  icon: row.icon,
+                  indent: row.indent,
+                  chevron: row.chevron,
+                  position: row.position) {
+                if row.groupID == Self.collapseID {
+                    if allExpanded { expanded.removeAll() } else { expanded = allGroupIDs }
+                } else if let groupID = row.groupID {
+                    toggle(groupID)
+                }
+            }
+            .ybRow(bottom: row.position == .last ? YBMetric.rowGap : 0)
         }
     }
 
-    private func meetingRow(_ m: Meeting) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(m.title)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(2)
+    private static let collapseID = "__collapse__"
 
-            HStack(spacing: 6) {
-                chip(RecordingService.durationText(m.durationSeconds), icon: "clock")
-                chip("\(m.segments.count) 段", icon: "waveform")
-                if !m.transcript.isEmpty {
-                    chip("\(m.transcript.count) 字", icon: "text.alignleft")
-                }
-                if !m.summaryJSON.isEmpty {
-                    chip("纪要", icon: "wand.and.stars")
-                }
-            }
-
-            HStack(spacing: 6) {
-                Text(timeText(m.startedAt))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if m.status == "recovered" {
-                    Text("意外中断，已恢复")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-            }
-        }
-        .padding(.vertical, 2)
+    private static func position(index: Int, count: Int) -> YBRowPosition {
+        if count <= 1 { return .only }
+        if index == 0 { return .first }
+        if index == count - 1 { return .last }
+        return .middle
     }
 
-    private func chip(_ text: String, icon: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: icon).font(.system(size: 9))
-            Text(text).font(.system(size: 11))
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(Color.secondary.opacity(0.12), in: Capsule())
-        .foregroundStyle(.secondary)
+    /// 一行灰字说清这场会的关键信息，比挂一排彩色小标签安静得多
+    private func metaLine(_ m: Meeting) -> String {
+        var parts = [timeText(m.startedAt), RecordingService.durationText(m.durationSeconds)]
+        if !m.segments.isEmpty { parts.append("\(m.segments.count) 段") }
+        if !m.transcript.isEmpty { parts.append("\(m.transcript.count) 字") }
+        if !m.summaryJSON.isEmpty { parts.append("有纪要") }
+        if m.status == "recovered" { parts.append("意外中断，已恢复") }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: - 展开状态
-
-    private var searchActive: Bool {
-        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     private func isExpanded(_ id: String) -> Bool {
         searchActive || expanded.contains(id)
@@ -283,8 +386,8 @@ struct MeetingsView: View {
 
     // MARK: - 数据
 
-    private var filtered: [Meeting] {
-        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var searchResults: [Meeting] {
+        let keyword = trimmedQuery
         guard !keyword.isEmpty else { return store.meetings }
         return store.meetings.filter {
             $0.title.localizedCaseInsensitiveContains(keyword)
@@ -321,7 +424,7 @@ struct MeetingsView: View {
     }
 
     private var tree: [YearNode] {
-        let meetings = filtered
+        let meetings = searchActive ? searchResults : store.meetings
         guard !meetings.isEmpty else { return [] }
         let calendar = Calendar.current
 

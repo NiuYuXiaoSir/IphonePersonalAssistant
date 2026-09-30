@@ -36,6 +36,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         # 图标来自 Assets.xcassets/AppIcon.appiconset（由 tools/make-appicon.ps1 生成）
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # 主题蓝也放资源目录（元宝那种饱和一点的蓝），系统控件跟着它走
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         # CI 里做无签名构建，签名交给手机端的侧载工具完成
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_REQUIRED: "NO"

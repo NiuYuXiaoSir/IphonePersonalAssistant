@@ -4,6 +4,8 @@ struct RecordView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var settings: SettingsStore
+    /// 录完会自动生成纪要，那一步要花 token
+    @ObservedObject private var balance = BalanceStore.shared
 
     @StateObject private var recorder = RecordingService()
     @StateObject private var transcriber = RealtimeTranscriber()
@@ -27,6 +29,7 @@ struct RecordView: View {
                 }
                 .padding(.vertical, 20)
             }
+            .background(YBColor.bg)
             .navigationTitle("记录会议")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -82,14 +85,14 @@ struct RecordView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("实时转写（只显示最近 300 字，完整内容保存在会议里）")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(YBColor.textSecondary)
             Text(String(transcriber.text.suffix(300)))
                 .font(.system(.caption, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
-        .background(Color.secondary.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .background(YBColor.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 20)
         .padding(.top, 14)
     }
@@ -97,23 +100,29 @@ struct RecordView: View {
     private var resultBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("已保存到会议列表", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(YBColor.success)
                 .font(.headline)
             if !saveMessage.isEmpty {
                 Text(saveMessage)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(YBColor.textSecondary)
             }
             if !summaryMessage.isEmpty {
                 Text(summaryMessage)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(YBColor.textSecondary)
+            }
+            // 自动纪要刚花掉一次 token，顺手把余额显示出来
+            if balance.supports(settings) {
+                Text("余额 \(balance.chipText)")
+                    .font(.caption2)
+                    .foregroundStyle(balance.isLow ? YBColor.warning : YBColor.textSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(Color.secondary.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .background(YBColor.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 20)
         .padding(.top, 16)
     }
@@ -123,17 +132,17 @@ struct RecordView: View {
         VStack(spacing: 10) {
             switch phase {
             case .idle:
-                prominent("开始录音", icon: "record.circle", tint: .accentColor) { start() }
+                primary("开始录音", icon: "record.circle", tint: YBColor.accent) { start() }
             case .recording:
-                bordered("打标记", icon: "flag") { recorder.addMarker() }
-                prominent("结束并保存", icon: "stop.circle.fill", tint: .red) { finishAndSave() }
+                soft("打标记", icon: "flag") { recorder.addMarker() }
+                primary("结束并保存", icon: "stop.circle.fill", tint: YBColor.danger) { finishAndSave() }
             case .finishing:
                 ProgressView()
                 Text("正在收尾并等最后一段转写…")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(YBColor.textSecondary)
             case .done:
-                prominent("返回会议列表", icon: "list.bullet", tint: .accentColor) { dismiss() }
+                primary("返回会议列表", icon: "list.bullet", tint: YBColor.accent) { dismiss() }
             }
         }
         .padding(.horizontal, 24)
@@ -227,6 +236,8 @@ struct RecordView: View {
                         self.store.update(updated)
                     }
                     self.summaryMessage = "纪要已生成：待办 \(parsed.actionItems.count) 条，日程 \(parsed.events.count) 条。去会议详情里确认写入。"
+                    // 这一步花掉了 token，回来的时候余额要跟着变
+                    BalanceStore.shared.refresh(settings: self.settings)
                 }
             } catch {
                 await MainActor.run {
@@ -245,23 +256,30 @@ struct RecordView: View {
         }
     }
 
-    private func prominent(_ title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
+    /// 大圆角主按钮，整行宽
+    private func primary(_ title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
+                .frame(height: 50)
+                .background(tint, in: Capsule())
         }
-        .buttonStyle(.borderedProminent)
-        .tint(tint)
+        .buttonStyle(YBPressStyle())
     }
 
-    private func bordered(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+    /// 次要按钮：灰胶囊
+    private func soft(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.primary)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                .frame(height: 46)
+                .background(YBColor.surfaceHi, in: Capsule())
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(YBPressStyle())
     }
 
     private func clock(_ seconds: Double) -> String {

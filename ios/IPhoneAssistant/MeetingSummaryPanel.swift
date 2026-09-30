@@ -43,13 +43,19 @@ extension SystemWriter {
 
 /// 会议纪要面板。
 ///
-/// 做成可内嵌的面板（而不是一个独立页面），因为它现在是会议详情里的一页——
-/// 听录音、看转写、生成纪要本来就是同一件事的三个动作，来回 push 太绕。
-struct MeetingSummaryPanel: View {
+/// 它是会议详情里那张「纸」上的内容之一，所以整块按文档排版：
+/// 摘要是一段话，后面按「议题 / 待办 / 日程 / 决议 / 要点 / 未决问题」一节节往下走，
+/// 不再是六张各带标题的卡片——那样看长文字很累，也不像一份纪要。
+///
+/// 抬头（标题 + 时间 + 改名）由外面传进来，因为它要跟着会议标题一起变。
+struct MeetingSummaryPanel<Header: View>: View {
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var settings: SettingsStore
+    /// 生成纪要要花 token，所以这一块也把余额摆出来
+    @ObservedObject private var balance = BalanceStore.shared
 
     let meetingID: String
+    @ViewBuilder var header: () -> Header
 
     @State private var summary = MeetingSummary()
     @State private var hasSummary = false
@@ -61,201 +67,171 @@ struct MeetingSummaryPanel: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if let m = meeting {
-                    if m.transcript.isEmpty {
-                        notice("还没有会议文字。先去「转写」页把文字准备好，再回来生成纪要。",
-                               icon: "exclamationmark.triangle",
-                               tint: .orange)
+            VStack(alignment: .leading, spacing: 16) {
+                header()
+
+                VStack(alignment: .leading, spacing: 18) {
+                    if let m = meeting {
+                        if m.transcript.isEmpty {
+                            notice("还没有会议文字。先去「转写」页把文字准备好，再回来生成纪要。",
+                                   icon: "exclamationmark.triangle")
+                        } else {
+                            generateBlock(m)
+                        }
+
+                        if hasSummary {
+                            document
+                            writeBlock
+                        }
                     } else {
-                        generateCard(m)
+                        notice("记录不存在，可能已经被删了", icon: "questionmark.folder")
                     }
 
-                    if hasSummary {
-                        if !summary.titleDraft.isEmpty { titleCard }
-                        if !summary.summaryText.isEmpty { textCard("摘要", "text.alignleft", summary.summaryText, .primary) }
-                        if !summary.topics.isEmpty { topicsCard }
-                        if !summary.decisions.isEmpty { listCard("决议", "checkmark.circle", summary.decisions, .primary) }
-                        if !summary.actionItems.isEmpty { actionCard }
-                        if !summary.events.isEmpty { eventCard }
-                        if !summary.keyPoints.isEmpty { listCard("要点", "list.bullet", summary.keyPoints, .primary) }
-                        if !summary.unresolved.isEmpty { listCard("未决问题", "questionmark.circle", summary.unresolved, .orange) }
-                        writeCard
+                    if !status.isEmpty {
+                        Text(status)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(YBColor.paperInkSoft)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(YBColor.paperHi,
+                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
-                } else {
-                    notice("记录不存在，可能已经被删了", icon: "questionmark.folder", tint: .secondary)
                 }
-
-                if !status.isEmpty {
-                    Text(status)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(Color(.secondarySystemGroupedBackground),
-                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
+                .padding(.horizontal, 20)
             }
-            .padding(16)
+            .padding(.bottom, 28)
         }
-        .background(Color(.systemGroupedBackground))
         .onAppear(perform: loadExisting)
     }
 
-    // MARK: - 卡片
+    // MARK: - 文档
 
-    private func generateCard(_ m: Meeting) -> some View {
-        card("生成", icon: "wand.and.stars") {
-            HStack(spacing: 12) {
-                infoChip("会议文字", "\(m.transcript.count) 字")
-                infoChip("模型", settings.model)
-            }
-            Button {
-                generate(m)
-            } label: {
-                Label(busy ? "生成中…（长会议可能要等半分钟）" : (hasSummary ? "重新生成纪要" : "生成 AI 纪要"),
-                      systemImage: "sparkles")
-                    .font(.footnote)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(busy)
+    @ViewBuilder
+    private var document: some View {
+        if !summary.titleDraft.isEmpty { titleSuggestion }
+        if !summary.summaryText.isEmpty { paragraph(summary.summaryText) }
 
-            Text("会真的向模型发一次请求。每条待办都被要求附上原文句子，方便你核对是不是模型编的。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+        if !summary.topics.isEmpty || !summary.actionItems.isEmpty || !summary.events.isEmpty
+            || !summary.decisions.isEmpty || !summary.keyPoints.isEmpty || !summary.unresolved.isEmpty {
+            Text("小结")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(YBColor.paperInk)
+                .padding(.top, 2)
+        }
+
+        if !summary.topics.isEmpty { topicsSection }
+        if !summary.actionItems.isEmpty { actionSection }
+        if !summary.events.isEmpty { eventSection }
+        if !summary.decisions.isEmpty {
+            bulletSection("决议", lines: summary.decisions)
+        }
+        if !summary.keyPoints.isEmpty {
+            bulletSection("要点", lines: summary.keyPoints)
+        }
+        if !summary.unresolved.isEmpty {
+            bulletSection("未决问题", lines: summary.unresolved, tint: YBColor.warning)
         }
     }
 
-    private var titleCard: some View {
-        card("标题建议", icon: "textformat") {
+    private var titleSuggestion: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("标题建议")
+                .font(.system(size: 13))
+                .foregroundStyle(YBColor.paperInkSoft)
             Text(summary.titleDraft)
-                .font(.headline)
-            Button("用它作为会议标题") { applyTitle() }
-                .font(.footnote)
-                .buttonStyle(.bordered)
-        }
-    }
-
-    private func textCard(_ title: String, _ icon: String, _ text: String, _ tint: Color) -> some View {
-        card(title, icon: icon) {
-            Text(text)
-                .font(.footnote)
-                .foregroundStyle(tint)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(YBColor.paperInk)
                 .fixedSize(horizontal: false, vertical: true)
+            Button("用它作为会议标题") { applyTitle() }
+                .buttonStyle(YBPaperButtonStyle())
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(YBColor.paperHi,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func listCard(_ title: String, _ icon: String, _ lines: [String], _ tint: Color) -> some View {
-        card(title, icon: icon) {
+    /// 摘要和议题都按正文排版：不套卡片，靠字号和留白分层
+    private func paragraph(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 15.5))
+            .foregroundStyle(YBColor.paperInk)
+            .lineSpacing(6)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var topicsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(summary.topics.indices, id: \.self) { index in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("\(index + 1). \(summary.topics[index].topic)")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(YBColor.paperInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(summary.topics[index].conclusion)
+                        .font(.system(size: 15.5))
+                        .foregroundStyle(YBColor.paperInk)
+                        .lineSpacing(5)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func bulletSection(_ title: String, lines: [String], tint: Color = YBColor.paperInk) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(YBColor.paperInk)
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text("·").font(.footnote).foregroundStyle(.secondary)
-                        Text(line)
-                            .font(.footnote)
+                ForEach(lines.indices, id: \.self) { index in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("•")
+                            .font(.system(size: 15.5))
+                            .foregroundStyle(YBColor.paperInkSoft)
+                        Text(lines[index])
+                            .font(.system(size: 15.5))
                             .foregroundStyle(tint)
+                            .lineSpacing(4)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
         }
-    }
-
-    private var topicsCard: some View {
-        card("议题与结论", icon: "bubble.left.and.bubble.right") {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(summary.topics) { topic in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(topic.topic).font(.subheadline.weight(.semibold))
-                        Text(topic.conclusion).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-    }
-
-    private var actionCard: some View {
-        card("待办（\(summary.actionItems.filter { $0.include }.count)/\(summary.actionItems.count) 条会写入提醒事项）",
-             icon: "checklist") {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach($summary.actionItems) { $item in
-                    reviewRow($item)
-                }
-            }
-        }
-    }
-
-    private var eventCard: some View {
-        card("日程（\(summary.events.filter { $0.include }.count)/\(summary.events.count) 条会写入日历）",
-             icon: "calendar") {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach($summary.events) { $item in
-                    reviewRow($item)
-                }
-            }
-        }
-    }
-
-    private var writeCard: some View {
-        card("写入", icon: "tray.and.arrow.down") {
-            Button {
-                writeSelected()
-            } label: {
-                Label(busy ? "写入中…" : "把勾选的条目写入系统", systemImage: "square.and.arrow.down")
-                    .font(.footnote)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(busy)
-
-            Button {
-                UIPasteboard.general.string = meeting?.summaryJSON ?? ""
-                status = "已复制纪要原文"
-            } label: {
-                Label("复制纪要原文", systemImage: "doc.on.doc")
-                    .font(.footnote)
-            }
-            .buttonStyle(.bordered)
-
-            Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。只有勾选的会被写入。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func notice(_ text: String, icon: String, tint: Color) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon)
-            Text(text).fixedSize(horizontal: false, vertical: true)
-        }
-        .font(.footnote)
-        .foregroundStyle(tint)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func infoChip(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.caption.weight(.medium))
-        }
-    }
-
-    private func card<Content: View>(_ title: String,
-                                     icon: String,
-                                     @ViewBuilder content: () -> Content) -> some View {
+    private var actionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: icon)
-                .font(.subheadline.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
-            content()
+            sectionTitle("待办", note: "\(summary.actionItems.filter { $0.include }.count)/\(summary.actionItems.count) 条会写进提醒事项")
+            ForEach($summary.actionItems) { $item in
+                reviewRow($item)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var eventSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("日程", note: "\(summary.events.filter { $0.include }.count)/\(summary.events.count) 条会写进日历")
+            ForEach($summary.events) { $item in
+                reviewRow($item)
+            }
+        }
+    }
+
+    private func sectionTitle(_ title: String, note: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(YBColor.paperInk)
+            Text(note)
+                .font(.system(size: 12))
+                .foregroundStyle(YBColor.paperInkSoft)
+        }
     }
 
     private func reviewRow(_ item: Binding<ParsedItem>) -> some View {
@@ -266,40 +242,135 @@ struct MeetingSummaryPanel: View {
                 } label: {
                     Image(systemName: item.wrappedValue.include ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 19))
-                        .foregroundStyle(item.wrappedValue.include ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(item.wrappedValue.include ? YBColor.accent : YBColor.paperInkSoft)
                 }
                 .buttonStyle(.plain)
 
                 TextField("标题", text: item.title, axis: .vertical)
-                    .font(.subheadline)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(YBColor.paperInk)
                     .lineLimit(1...3)
             }
 
-            HStack(spacing: 10) {
-                Image(systemName: "clock").font(.caption2).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11))
+                    .foregroundStyle(YBColor.paperInkSoft)
                 TextField("时间（可留空）", text: item.dueDate)
-                    .font(.caption)
+                    .font(.system(size: 13))
+                    .foregroundStyle(YBColor.paperInk)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 if item.wrappedValue.kind == .event {
                     TextField("分钟", value: item.durationMinutes, format: .number)
-                        .font(.caption)
+                        .font(.system(size: 13))
+                        .foregroundStyle(YBColor.paperInk)
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
                         .frame(width: 42)
-                    Text("分钟").font(.caption2).foregroundStyle(.secondary)
+                    Text("分钟")
+                        .font(.system(size: 12))
+                        .foregroundStyle(YBColor.paperInkSoft)
                 }
             }
             .padding(.leading, 27)
 
             if !item.wrappedValue.notes.isEmpty {
                 Text(item.wrappedValue.notes)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(YBColor.paperInkSoft)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 27)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(YBColor.paperHi,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func generateBlock(_ m: Meeting) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 14) {
+                Text("会议文字 \(m.transcript.count) 字")
+                    .font(.system(size: 13))
+                    .foregroundStyle(YBColor.paperInkSoft)
+                Text("模型 \(settings.model)")
+                    .font(.system(size: 13))
+                    .foregroundStyle(YBColor.paperInkSoft)
+                if balance.supports(settings) {
+                    Button {
+                        balance.refresh(settings: settings)
+                    } label: {
+                        Text("余额 \(balance.chipText)")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(balance.isLow ? YBColor.danger : YBColor.paperInkSoft)
+                    }
+                    .buttonStyle(YBPressStyle())
+                }
+                Spacer(minLength: 0)
+            }
+
+            Button {
+                generate(m)
+            } label: {
+                Label(busy ? "生成中…（长会议可能要等半分钟）" : (hasSummary ? "重新生成纪要" : "生成 AI 纪要"),
+                      systemImage: "sparkles")
+            }
+            .buttonStyle(YBPaperPrimaryButtonStyle())
+            .disabled(busy)
+
+            Text("会真的向模型发一次请求。每条待办都被要求附上原文句子，方便你核对是不是模型编的。")
+                .font(.system(size: 12))
+                .foregroundStyle(YBColor.paperInkSoft)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(YBColor.paperHi,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var writeBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                writeSelected()
+            } label: {
+                Label(busy ? "写入中…" : "把勾选的条目写入系统", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(YBPaperPrimaryButtonStyle())
+            .disabled(busy)
+
+            Button {
+                UIPasteboard.general.string = meeting?.summaryJSON ?? ""
+                status = "已复制纪要原文"
+            } label: {
+                Label("复制纪要原文", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(YBPaperButtonStyle())
+
+            Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。只有勾选的会被写入。")
+                .font(.system(size: 12))
+                .foregroundStyle(YBColor.paperInkSoft)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(YBColor.paperHi,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func notice(_ text: String, icon: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+            Text(text).fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.system(size: 14))
+        .foregroundStyle(YBColor.paperInkSoft)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(YBColor.paperHi,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // MARK: - 动作
@@ -347,6 +418,8 @@ struct MeetingSummaryPanel: View {
                     self.summary = parsed
                     self.hasSummary = true
                     self.status = "生成完成：待办 \(parsed.actionItems.count) 条，日程 \(parsed.events.count) 条，决议 \(parsed.decisions.count) 条"
+                    // 刚花掉一次 token，余额跟着更新
+                    self.balance.refresh(settings: self.settings)
                 }
             } catch {
                 await MainActor.run {
@@ -394,7 +467,9 @@ struct MeetingSummaryPanel: View {
 }
 
 #Preview {
-    MeetingSummaryPanel(meetingID: "none")
-        .environmentObject(MeetingStore())
-        .environmentObject(SettingsStore())
+    MeetingSummaryPanel(meetingID: "none") {
+        Text("抬头")
+    }
+    .environmentObject(MeetingStore())
+    .environmentObject(SettingsStore())
 }

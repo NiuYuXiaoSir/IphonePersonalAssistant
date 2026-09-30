@@ -43,6 +43,9 @@ struct AssistantView: View {
                 if hasPendingNotices { pendingNoticeSection }
             }
             .scrollDismissesKeyboard(.immediately)
+            .scrollContentBackground(.hidden)
+            .background(YBColor.bg)
+            .listRowBackground(YBColor.surface)
             .navigationTitle("速记")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -120,7 +123,7 @@ struct AssistantView: View {
                 } label: {
                     Image(systemName: liveASR.isRunning ? "waveform.circle.fill" : "mic.fill")
                         .font(.system(size: 18))
-                        .foregroundStyle(liveASR.isRunning ? Color.red : Color.accentColor)
+                        .foregroundStyle(liveASR.isRunning ? YBColor.danger : YBColor.accent)
                         .symbolEffect(.variableColor, isActive: liveASR.isRunning)
                 }
                 .buttonStyle(.plain)
@@ -132,7 +135,7 @@ struct AssistantView: View {
             } else if !liveASR.message.isEmpty && liveASR.message != "已停止" {
                 Text(liveASR.message)
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(YBColor.warning)
             }
         } header: {
             Text("内容")
@@ -200,16 +203,18 @@ struct AssistantView: View {
                     Spacer()
                     if busy { ProgressView().controlSize(.small) }
                     Text(busy ? "保存中…" : saveButtonTitle)
-                        .font(.headline)
+                        .font(YBFont.actionLabel)
+                        .foregroundStyle(YBColor.accent)
                     Spacer()
                 }
+                .padding(.vertical, 6)
             }
             .disabled(busy)
 
             if !message.isEmpty {
                 Label(message, systemImage: messageIsError ? "exclamationmark.triangle" : "checkmark.circle")
                     .font(.footnote)
-                    .foregroundStyle(messageIsError ? Color.orange : Color.green)
+                    .foregroundStyle(messageIsError ? YBColor.warning : YBColor.success)
             }
         } footer: {
             Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。这一页不联网，没配密钥也能用。")

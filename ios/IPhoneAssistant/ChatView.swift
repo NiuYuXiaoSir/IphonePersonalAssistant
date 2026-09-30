@@ -8,10 +8,16 @@ import PhotosUI
 /// 助手回过来的卡片就是要建的东西，确认一下就能写进系统。
 /// 需要自己一项项填的时候去「速记」页，那是给人用手填的。
 ///
+/// 版式照元宝：用户消息是右边的灰色气泡，助手的话是不带气泡的正文，
+/// 下面跟一排方形小按钮（复制 / 朗读 / 删除）；底部是一条圆角胶囊，
+/// 相机、输入框、语音、发送都在胶囊里面，不再是几个分开的圆按钮。
+///
 /// 它是被「对话」列表推进来的（外面已经有 NavigationStack），所以这里不再套一层。
 struct ChatView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var chats: ChatStore
+    /// 余额是全局一份：这里花掉 token 之后，别的页面看到的数字也跟着变
+    @ObservedObject private var balance = BalanceStore.shared
 
     /// 看的是哪一段对话
     let threadID: String
@@ -44,39 +50,50 @@ struct ChatView: View {
     ]
 
     var body: some View {
-        conversation
-            .background(Color(.systemBackground))
-            .navigationTitle(threadTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-            .toolbar { toolbarContent }
-            .fullScreenCover(isPresented: $showCamera) {
-                CameraPicker(isPresented: $showCamera) { attach($0) }
-                    .ignoresSafeArea()
+        Group {
+            if entries.isEmpty {
+                welcome
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                conversation
             }
-            .photosPicker(isPresented: $showLibrary,
-                          selection: $libraryItems,
-                          maxSelectionCount: 4,
-                          matching: .images)
-            .onChange(of: libraryItems) { _, items in loadLibrary(items) }
-            .onChange(of: liveASR.liveText) { _, text in
-                if liveASR.isRunning { draft = voicePrefix + text }
-            }
-            .onDisappear { if liveASR.isRunning { liveASR.stop() } }
-            .confirmationDialog("清空这段对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
-                Button("清空", role: .destructive) { chats.clearThread(id: threadID) }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("这段对话的消息和图片都会被删掉，会话本身留着。已经写进提醒事项、日历、备忘的东西不受影响。")
-            }
-            .alert("提示", isPresented: Binding(
-                get: { !toast.isEmpty },
-                set: { if !$0 { toast = "" } }
-            )) {
-                Button("知道了") { toast = "" }
-            } message: {
-                Text(toast)
-            }
+        }
+        .background(YBColor.bg)
+        .navigationTitle(threadTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .toolbar { toolbarContent }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker(isPresented: $showCamera) { attach($0) }
+                .ignoresSafeArea()
+        }
+        .photosPicker(isPresented: $showLibrary,
+                      selection: $libraryItems,
+                      maxSelectionCount: 4,
+                      matching: .images)
+        .onChange(of: libraryItems) { _, items in loadLibrary(items) }
+        .onAppear { balance.refreshIfStale(settings: settings) }
+        .onChange(of: liveASR.liveText) { _, text in
+            if liveASR.isRunning { draft = voicePrefix + text }
+        }
+        .onDisappear {
+            if liveASR.isRunning { liveASR.stop() }
+            YBSpeech.stop()
+        }
+        .confirmationDialog("清空这段对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
+            Button("清空", role: .destructive) { chats.clearThread(id: threadID) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这段对话的消息和图片都会被删掉，会话本身留着。已经写进提醒事项、日历、备忘的东西不受影响。")
+        }
+        .alert("提示", isPresented: Binding(
+            get: { !toast.isEmpty },
+            set: { if !$0 { toast = "" } }
+        )) {
+            Button("知道了") { toast = "" }
+        } message: {
+            Text(toast)
+        }
     }
 
     // MARK: - 会话读写
@@ -103,13 +120,68 @@ struct ChatView: View {
         chats.saveNow()
     }
 
+    // MARK: - 空对话的问候
+    //
+    // 元宝首页中间就是一句大字问候，这里照搬：整块内容在可用区域里居中，
+    // 下面跟几个能直接点开的引子——第一次用的人往往不知道该说多具体。
+
+    private var welcome: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 10) {
+                Text("Hi，有什么要办的？")
+                    .font(.system(size: 28, weight: .bold))
+                    .multilineTextAlignment(.center)
+
+                Text("说一句就把待办、日程、备忘、提醒建出来，\n核对一下直接进提醒事项和日历。")
+                    .font(.system(size: 15))
+                    .foregroundStyle(YBColor.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            keyStatus
+
+            VStack(spacing: 8) {
+                ForEach(examples, id: \.self) { text in
+                    Button {
+                        draft = text
+                    } label: {
+                        Text(text)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.primary)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                            .background(YBColor.surface,
+                                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(YBPressStyle())
+                }
+            }
+        }
+        .padding(.horizontal, 28)
+    }
+
+    @ViewBuilder
+    private var keyStatus: some View {
+        if settings.hasKey {
+            Label("凭证已就绪 · \(settings.model)", systemImage: "checkmark.seal")
+                .font(.system(size: 13))
+                .foregroundStyle(YBColor.success)
+        } else {
+            Label("还没配置密钥，先去「设置」页填一个", systemImage: "exclamationmark.triangle")
+                .font(.system(size: 13))
+                .foregroundStyle(YBColor.warning)
+        }
+    }
+
     // MARK: - 对话流
 
     private var conversation: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    if entries.isEmpty { welcome }
+                LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(entries) { entry in
                         row(entry).id(entry.id)
                     }
@@ -128,12 +200,12 @@ struct ChatView: View {
                 )
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: entries.count) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: entries.last?.state) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: entries.last?.items?.count) { _, _ in scrollToBottom(proxy) }
             .onAppear {
                 DispatchQueue.main.async { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
             }
+            .onChange(of: entries.count) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: entries.last?.state) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: entries.last?.items?.count) { _, _ in scrollToBottom(proxy) }
         }
     }
 
@@ -145,62 +217,6 @@ struct ChatView: View {
         }
     }
 
-    /// 空对话时的开场白。顺手把几个例子做成可直接点开的引子——
-    /// 第一次用的人往往不知道该说多具体。
-    private var welcome: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("直接说要做的事")
-                    .font(.title3.weight(.semibold))
-                Text("说一句话，我就把里面的待办、日程、备忘建出来，你确认后直接进提醒事项和日历。不用自己填表，也不用先选类型。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if settings.hasKey {
-                Label("凭证已就绪 · \(settings.model)", systemImage: "checkmark.seal")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            } else {
-                Label("还没配置密钥，先去「设置」页填一个", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("试一句")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                ForEach(examples, id: \.self) { text in
-                    Button {
-                        draft = text
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 10))
-                            Text(text)
-                                .font(.footnote)
-                                .multilineTextAlignment(.leading)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color(.secondarySystemBackground), in: Capsule())
-                        .foregroundStyle(.primary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Text("也可以拍白板、纸质笔记、聊天截图，图里的待办和时间我会一起读出来。说完还能接着改：「第二条改成周五下午」。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.top, 24)
-        .padding(.bottom, 8)
-    }
-
     @ViewBuilder
     private func row(_ entry: ChatEntry) -> some View {
         if entry.role == .user {
@@ -210,19 +226,21 @@ struct ChatView: View {
         }
     }
 
+    // MARK: - 用户消息
+
     private func userRow(_ entry: ChatEntry) -> some View {
         HStack {
-            Spacer(minLength: 40)
+            Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: 8) {
                 if !entry.images.isEmpty { imageStrip(entry.images) }
                 if !entry.text.isEmpty {
                     Text(entry.text)
-                        .font(.callout)
-                        .foregroundStyle(.white)
+                        .font(YBFont.chatBody)
+                        .foregroundStyle(Color.primary)
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(Color.accentColor,
+                        .background(YBColor.surfaceHi,
                                     in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
             }
@@ -247,36 +265,32 @@ struct ChatView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 } else {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.secondary.opacity(0.15))
+                        .fill(YBColor.surface)
                         .frame(width: 88, height: 88)
-                        .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                        .overlay(Image(systemName: "photo").foregroundStyle(YBColor.textSecondary))
                 }
             }
         }
     }
 
+    // MARK: - 助手消息
+
     private func assistantRow(_ entry: ChatEntry) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if entry.state == .thinking {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text(entry.text.isEmpty ? "正在整理…" : entry.text)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(YBFont.chatBody)
+                        .foregroundStyle(YBColor.textSecondary)
                 }
                 .padding(.vertical, 2)
             } else if !entry.text.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 3)
-                    Text(entry.text)
-                        .font(.callout)
-                        .foregroundStyle(entry.state == .failed ? Color.orange : Color.primary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(entry.text)
+                    .font(YBFont.chatBody)
+                    .foregroundStyle(entry.state == .failed ? YBColor.warning : Color.primary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let items = entry.items, !items.isEmpty {
@@ -286,39 +300,64 @@ struct ChatView: View {
             }
 
             if let result = entry.result {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                            .padding(.top, 2)
-                        Text(result)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                resultCard(entry, result: result)
+            }
 
-                    // 写进的是「AI助理」这个列表/日历，不是默认那个。
-                    // 用户去提醒事项里翻不到是常事，给个直达入口省得到处找。
-                    if !entry.writtenKinds.isEmpty {
-                        HStack(spacing: 8) {
-                            if entry.writtenKinds.contains("todo") {
-                                openAppButton("打开提醒事项", scheme: "x-apple-reminder://")
-                            }
-                            if entry.writtenKinds.contains("event") {
-                                openAppButton("打开日历", scheme: "calshow://")
-                            }
-                        }
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemBackground),
-                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            if entry.state != .thinking && !entry.text.isEmpty {
+                actionRow(entry)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func resultCard(_ entry: ChatEntry, result: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(YBColor.success)
+                    .padding(.top, 2)
+                Text(result)
+                    .font(.system(size: 14))
+                    .foregroundStyle(YBColor.textSecondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // 写进的是「AI助理」这个列表/日历，不是默认那个。
+            // 用户去提醒事项里翻不到是常事，给个直达入口省得到处找。
+            if !entry.writtenKinds.isEmpty {
+                HStack(spacing: 8) {
+                    if entry.writtenKinds.contains("todo") {
+                        openAppButton("打开提醒事项", scheme: "x-apple-reminder://")
+                    }
+                    if entry.writtenKinds.contains("event") {
+                        openAppButton("打开日历", scheme: "calshow://")
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(YBColor.surface,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    /// 助手消息下面那排方形小按钮。元宝是五个（复制/赞/踩/朗读/转发），
+    /// 这里只留真的能用的三个：复制、朗读、删除。
+    private func actionRow(_ entry: ChatEntry) -> some View {
+        HStack(spacing: 8) {
+            YBSquareButton(icon: "doc.on.doc") {
+                UIPasteboard.general.string = entry.text
+                toast = "已复制这条回复"
+            }
+            YBSquareButton(icon: "speaker.wave.2") {
+                YBSpeech.toggle(entry.text)
+            }
+            YBSquareButton(icon: "trash", tint: YBColor.danger) {
+                removeEntry(entry.id)
+            }
+        }
     }
 
     // MARK: - 输入栏
@@ -328,18 +367,19 @@ struct ChatView: View {
             if !liveASR.message.isEmpty && !liveASR.isRunning && liveASR.message != "已停止" {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.caption2)
+                        .font(.system(size: 11))
                     Text(liveASR.message)
-                        .font(.caption2)
+                        .font(.system(size: 12))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .foregroundStyle(.orange)
+                .foregroundStyle(YBColor.warning)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
             }
 
             if !attachments.isEmpty { attachmentStrip }
 
-            HStack(alignment: .bottom, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 4) {
                 Menu {
                     Button {
                         openCamera()
@@ -353,27 +393,26 @@ struct ChatView: View {
                     }
                 } label: {
                     Image(systemName: "camera")
-                        .font(.system(size: 19))
-                        .frame(width: 34, height: 34)
+                        .font(.system(size: 20))
+                        .foregroundStyle(YBColor.textSecondary)
+                        .frame(width: 36, height: 36)
                         .contentShape(Rectangle())
                 }
                 .disabled(busy)
 
                 TextField(composerPlaceholder, text: $draft, axis: .vertical)
                     .lineLimit(1...5)
-                    .font(.callout)
-                    .padding(.horizontal, 12)
+                    .font(YBFont.chatBody)
                     .padding(.vertical, 8)
-                    .background(Color(.secondarySystemBackground),
-                                in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .frame(minHeight: 36)
 
                 Button {
                     toggleVoice()
                 } label: {
                     Image(systemName: liveASR.isRunning ? "waveform.circle.fill" : "waveform")
                         .font(.system(size: 21))
-                        .foregroundStyle(liveASR.isRunning ? Color.red : Color.secondary)
-                        .frame(width: 32, height: 34)
+                        .foregroundStyle(liveASR.isRunning ? YBColor.danger : YBColor.textSecondary)
+                        .frame(width: 34, height: 36)
                         .contentShape(Rectangle())
                         .symbolEffect(.variableColor, isActive: liveASR.isRunning)
                 }
@@ -383,20 +422,21 @@ struct ChatView: View {
                     send()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 27))
-                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
-                        .frame(width: 34, height: 34)
+                        .font(.system(size: 28))
+                        .foregroundStyle(canSend ? YBColor.accent : YBColor.textTertiary)
+                        .frame(width: 36, height: 36)
                         .contentShape(Rectangle())
                 }
                 .disabled(!canSend)
             }
-            .padding(.bottom, liveASR.isRunning ? 2 : 0)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .background(YBColor.surface,
+                        in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
         .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
+        .padding(.top, 6)
+        .padding(.bottom, 6)
     }
 
     private var attachmentStrip: some View {
@@ -432,7 +472,9 @@ struct ChatView: View {
             Spacer()
             Button("收起键盘") { hideKeyboard() }
         }
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            // 这一页每发一次消息都要花 token，余额摆在能看见的地方
+            if balance.supports(settings) { balanceChip }
             if !entries.isEmpty {
                 Menu {
                     Button {
@@ -447,6 +489,22 @@ struct ChatView: View {
         }
     }
 
+    /// 顶上的余额胶囊：点一下重新查
+    private var balanceChip: some View {
+        YBBalanceChip(text: balance.chipText,
+                      icon: balance.chipIcon,
+                      tint: balanceTint,
+                      busy: balance.isRefreshing) {
+            balance.refresh(settings: settings)
+        }
+    }
+
+    private var balanceTint: Color {
+        if balance.isLow { return YBColor.warning }
+        if balance.isUnavailable { return YBColor.textSecondary }
+        return Color.primary
+    }
+
     // MARK: - 状态与工具
 
     private var busy: Bool {
@@ -458,7 +516,7 @@ struct ChatView: View {
     }
 
     private var composerPlaceholder: String {
-        liveASR.isRunning ? "在听…" : "说一句要做的事…"
+        liveASR.isRunning ? "在听…" : "发消息或按住说话…"
     }
 
     private func hideKeyboard() {
@@ -479,15 +537,12 @@ struct ChatView: View {
             UIApplication.shared.open(url, options: [:], completionHandler: nil)
         } label: {
             HStack(spacing: 4) {
-                Text(title).font(.caption)
+                Text(title).font(.system(size: 13))
                 Image(systemName: "arrow.up.forward.app")
                     .font(.system(size: 10))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(.tertiarySystemBackground), in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(YBSoftButtonStyle())
     }
 
     private func openCamera() {
@@ -591,6 +646,8 @@ struct ChatView: View {
         }
         // 模型刚回来的东西立刻落盘，别等那 0.8 秒的合并窗口
         chats.saveNow()
+        // 这一趟已经花掉 token 了，余额重新查一次，胶囊上的数字才是真的
+        balance.refresh(settings: settings)
     }
 
     private func write(_ id: String) {
@@ -676,18 +733,14 @@ private struct ItemsCard: View {
             ForEach($items) { $item in
                 itemRow($item)
                 if $item.wrappedValue.id != items.last?.id {
-                    Divider().padding(.leading, 44)
+                    Rectangle().fill(YBColor.line).frame(height: 1).padding(.leading, 44)
                 }
             }
-            Divider()
+            Rectangle().fill(YBColor.line).frame(height: 1)
             footer
         }
-        .background(Color(.secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-        )
+        .background(YBColor.surface,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .disabled(busy)
     }
 
@@ -698,7 +751,7 @@ private struct ItemsCard: View {
             } label: {
                 Image(systemName: item.wrappedValue.include ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 20))
-                    .foregroundStyle(item.wrappedValue.include ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(item.wrappedValue.include ? YBColor.accent : YBColor.textTertiary)
             }
             .buttonStyle(.plain)
             .padding(.top, 1)
@@ -706,38 +759,38 @@ private struct ItemsCard: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
                     Image(systemName: item.wrappedValue.kind.symbol)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(YBColor.textSecondary)
                     TextField("标题", text: item.title, axis: .vertical)
-                        .font(.subheadline.weight(.medium))
+                        .font(.system(size: 15, weight: .medium))
                         .lineLimit(1...3)
                     destinationMenu(item)
                 }
 
                 HStack(spacing: 8) {
                     Image(systemName: "clock")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(YBColor.textSecondary)
                     TextField("时间（可留空）", text: item.dueDate)
-                        .font(.caption)
+                        .font(.system(size: 13))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     if item.wrappedValue.kind == .event {
                         TextField("分钟", value: item.durationMinutes, format: .number)
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                             .frame(width: 42)
                         Text("分钟")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 12))
+                            .foregroundStyle(YBColor.textSecondary)
                     }
                 }
 
                 if !item.wrappedValue.notes.isEmpty {
                     Text(item.wrappedValue.notes)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(YBColor.textSecondary)
                         .lineLimit(3)
                 }
             }
@@ -768,8 +821,8 @@ private struct ItemsCard: View {
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Color.accentColor.opacity(0.14), in: Capsule())
-            .foregroundStyle(Color.accentColor)
+            .background(YBColor.accent.opacity(0.16), in: Capsule())
+            .foregroundStyle(YBColor.accent)
         }
     }
 
@@ -779,13 +832,13 @@ private struct ItemsCard: View {
                 let target = !allSelected
                 for index in items.indices { items[index].include = target }
             }
-            .font(.caption)
+            .font(.system(size: 13))
             .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(YBColor.accent)
 
             Text("\(items.filter { $0.include }.count)/\(items.count) 条")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12))
+                .foregroundStyle(YBColor.textSecondary)
 
             Spacer()
 
@@ -795,14 +848,9 @@ private struct ItemsCard: View {
                         ProgressView().controlSize(.mini)
                     }
                     Text(writeTitle)
-                        .font(.caption.weight(.semibold))
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(Color.accentColor, in: Capsule())
-                .foregroundStyle(.white)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(YBPrimaryButtonStyle())
             .disabled(busy || items.allSatisfy { !$0.include })
         }
         .padding(.horizontal, 12)
@@ -847,7 +895,9 @@ extension UIImage {
 }
 
 #Preview {
-    ChatListView()
-        .environmentObject(ChatStore())
-        .environmentObject(SettingsStore())
+    NavigationStack {
+        ChatListView()
+    }
+    .environmentObject(ChatStore())
+    .environmentObject(SettingsStore())
 }

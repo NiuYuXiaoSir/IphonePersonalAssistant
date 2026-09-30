@@ -27,6 +27,8 @@ struct RootView: View {
                 .tabItem { Label("诊断", systemImage: "stethoscope") }
                 .tag(AppRouter.Tab.diagnostics)
         }
+        // 页签、开关、分段控件这些系统控件统一走元宝那个蓝
+        .tint(YBColor.accent)
         .environmentObject(settings)
         .environmentObject(meetings)
         .environmentObject(chats)
