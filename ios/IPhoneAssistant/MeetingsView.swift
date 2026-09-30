@@ -106,8 +106,7 @@ struct MeetingsView: View {
                 }
             }
         } else {
-            let results = searchResults
-            if results.isEmpty {
+            if searchResults.isEmpty {
                 Section {
                     YBHint(text: "没有匹配「\(trimmedQuery)」的记录。搜索会同时匹配标题和会议文字。",
                            icon: "magnifyingglass")
@@ -115,12 +114,15 @@ struct MeetingsView: View {
                         .ybRow(horizontal: 0)
                 }
             } else {
+                // 搜索时 displayRows 给的就是搜索结果，用它而不是 searchResults——
+                // 前者已经摊平成 DisplayRow（带首尾圆角），直接就能画
+                let rows = displayRows
                 Section {
-                    ForEach(results) { row in
+                    ForEach(rows) { row in
                         rowView(row)
                     }
                 } header: {
-                    YBPinnedHeader("找到 \(results.count) 场")
+                    YBPinnedHeader("找到 \(rows.count) 场")
                 }
             }
         }
