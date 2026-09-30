@@ -6,6 +6,7 @@ import SwiftUI
 /// 长期用下来再按「工作」「家里」这类分组建文件夹。
 struct ChatListView: View {
     @EnvironmentObject private var chats: ChatStore
+    @ObservedObject private var router = AppRouter.shared
 
     @State private var path: [String] = []
     @State private var foldersExpanded = true
@@ -63,6 +64,18 @@ struct ChatListView: View {
                 }
                 Button("取消", role: .cancel) { renamingFolder = nil }
             }
+            .onAppear(perform: consumeShortcut)
+            .onChange(of: router.pending) { _, _ in consumeShortcut() }
+        }
+    }
+
+    /// 长按图标点了「新建对话」：建一个直接推进去
+    private func consumeShortcut() {
+        guard router.pending == .newChat else { return }
+        router.pending = nil
+        DispatchQueue.main.async {
+            let thread = chats.createThread()
+            path.append(thread.id)
         }
     }
 

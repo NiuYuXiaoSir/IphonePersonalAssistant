@@ -8,6 +8,7 @@ import SwiftUI
 /// 默认只展开离现在最近的那一天。
 struct MeetingsView: View {
     @EnvironmentObject private var store: MeetingStore
+    @ObservedObject private var router = AppRouter.shared
 
     @State private var showRecorder = false
     @State private var query = ""
@@ -45,8 +46,19 @@ struct MeetingsView: View {
             .fullScreenCover(isPresented: $showRecorder) {
                 RecordView()
             }
-            .onAppear(perform: primeExpansion)
+            .onAppear {
+                primeExpansion()
+                consumeShortcut()
+            }
+            .onChange(of: router.pending) { _, _ in consumeShortcut() }
         }
+    }
+
+    /// 长按图标点了「开始录音」：直接把这个页面的录音弹窗拉起来
+    private func consumeShortcut() {
+        guard router.pending == .record else { return }
+        router.pending = nil
+        DispatchQueue.main.async { showRecorder = true }
     }
 
     // MARK: - 历史记录
