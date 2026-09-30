@@ -1,194 +1,468 @@
 import SwiftUI
-import AVFoundation
 import UIKit
 
-/// 极简播放器，用来试听某个录音段。
-/// 它的另一个作用是一一能播出来，就说明这个文件是完整的，这是验证分段录制有没有坏掉的最快方法。
-final class SimplePlayer: ObservableObject {
-    @Published private(set) var playingID: String?
-    private var player: AVAudioPlayer?
-
-    func toggle(id: String, url: URL) {
-        if playingID == id {
-            stop()
-            return
-        }
-        stop()
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [])
-            try session.setActive(true)
-            let p = try AVAudioPlayer(contentsOf: url)
-            p.play()
-            player = p
-            playingID = id
-            AppLog.info("Player", "播放 \(url.lastPathComponent)，时长 \(String(format: "%.1f", p.duration)) 秒")
-        } catch {
-            AppLog.error("Player", "播放失败：\(error.localizedDescription)")
-        }
-    }
-
-    func stop() {
-        player?.stop()
-        player = nil
-        playingID = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
-}
-
+/// 会议详情。
+///
+/// 布局参考了录音类 App 的通用形态：标题和播放条钉在顶部，下面用分页切换
+/// 「转写 / 纪要 / 录音 / 导出」。比起原来一长条列表，最大的区别是
+/// 播放器一直在视野里——边听边看文字是会后整理最常用的动作。
 struct MeetingDetailView: View {
     @EnvironmentObject private var store: MeetingStore
+    @EnvironmentObject private var settings: SettingsStore
+    @Environment(\.dismiss) private var dismiss
+
     let meetingID: String
 
-    @StateObject private var player = SimplePlayer()
+    @StateObject private var player = MeetingPlayer()
+
+    @State private var tab: DetailTab = .transcript
     @State private var titleDraft = ""
     @State private var transcriptDraft = ""
-    @State private var loaded = false
-    @State private var message = ""
+    @State private var loadedDraft = false
+    @State private var loadedPlayer = false
+    @State private var scrubValue: Double = 0
+    @State private var isScrubbing = false
+    @State private var toast = ""
+    @State private var showRename = false
+    @State private var showDeleteConfirm = false
+
+    private enum DetailTab: String, CaseIterable, Identifiable {
+        case transcript = "转写"
+        case summary = "纪要"
+        case audio = "录音"
+        case export = "导出"
+
+        var id: String { rawValue }
+    }
 
     private var meeting: Meeting? { store.meeting(id: meetingID) }
 
     var body: some View {
-        List {
+        Group {
             if let m = meeting {
-                summarySection(m)
-                audioSection(m)
-                textSection
-                transcribeSection(m)
-                aiSection(m)
-                exportSection(m)
+                VStack(spacing: 0) {
+                    header(m)
+                    tabPicker
+                    Divider()
+                    content(m)
+                }
             } else {
-                Text("记录不存在，可能已被删除").foregroundStyle(.secondary)
+                missingView
             }
         }
+        .background(Color(.systemGroupedBackground))
         .navigationTitle(meeting?.title ?? "会议")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear(perform: loadDrafts)
-        .onDisappear { player.stop() }
-    }
-
-    private func loadDrafts() {
-        guard !loaded, let m = meeting else { return }
-        titleDraft = m.title
-        transcriptDraft = m.transcript
-        loaded = true
-    }
-
-    // MARK: - 区块
-
-    private func summarySection(_ m: Meeting) -> some View {
-        Section("基本信息") {
-            LabeledContent("开始", value: m.startedAt.formatted(date: .abbreviated, time: .shortened))
-            LabeledContent("时长", value: RecordingService.durationText(m.durationSeconds))
-            LabeledContent("录音段数", value: "\(m.segments.count)")
-            if !m.markers.isEmpty {
-                LabeledContent("标记点", value: markerText(m.markers))
+        .toolbar { topBarMenu }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("收起键盘") { hideKeyboard() }
             }
-            LabeledContent("状态", value: m.status)
+        }
+        .onAppear {
+            loadDrafts()
+            loadPlayer()
+        }
+        .onDisappear {
+            player.stop()
+            saveTranscript(silently: true)
+        }
+        .onChange(of: meeting?.transcript) { _, newValue in
+            // 在「自动转写」页里跑完识别回来，文字要跟着刷新，否则一保存就把刚转出来的覆盖没了
+            guard let newValue, newValue != transcriptDraft else { return }
+            transcriptDraft = newValue
+        }
+        .onChange(of: player.elapsedTotal) { _, value in
+            if !isScrubbing { scrubValue = value }
+        }
+        .onChange(of: scrubValue) { _, value in
+            if isScrubbing { player.seek(to: value) }
+        }
+        .alert("重命名", isPresented: $showRename) {
             TextField("标题", text: $titleDraft)
-                .onSubmit { renameMeeting() }
+            Button("保存") { renameMeeting() }
+            Button("取消", role: .cancel) {}
+        }
+        .alert("提示", isPresented: Binding(
+            get: { !toast.isEmpty },
+            set: { if !$0 { toast = "" } }
+        )) {
+            Button("知道了") { toast = "" }
+        } message: {
+            Text(toast)
+        }
+        .confirmationDialog("删除这场会议？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("删除", role: .destructive) { deleteMeeting() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("音频文件和转写文字会一起删掉，删了拿不回来。")
         }
     }
 
-    /// markers 是 [Double]，浮点数不能用 % 取模，所以先转成 Int
-    private func markerText(_ markers: [Double]) -> String {
-        markers.map { seconds in
-            let total = Int(seconds)
-            return "\(total / 60)分\(total % 60)秒"
-        }.joined(separator: "、")
+    // MARK: - 顶部
+
+    private func header(_ m: Meeting) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(m.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                    Text(metaLine(m))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    titleDraft = m.title
+                    showRename = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+            }
+
+            playerBar
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 12)
+        .background(Color(.secondarySystemGroupedBackground))
     }
 
-    private func audioSection(_ m: Meeting) -> some View {
-        Section {
-            ForEach(m.segments) { seg in
-                HStack {
-                    Button {
-                        let url = MeetingStore.recordingsDirectory().appendingPathComponent(seg.fileName)
-                        player.toggle(id: seg.id, url: url)
-                    } label: {
-                        Label(player.playingID == seg.id ? "停止" : "试听",
-                              systemImage: player.playingID == seg.id ? "stop.fill" : "play.fill")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
+    private var playerBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                player.togglePlay()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundStyle(player.loaded ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!player.loaded)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(seg.fileName).font(.system(.caption2, design: .monospaced))
-                        Text(String(format: "偏移 %.0f 秒 · 时长 %.1f 秒", seg.startOffset, seg.durationSeconds))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+            VStack(spacing: 2) {
+                Slider(value: $scrubValue, in: 0...max(player.totalDuration, 1)) { editing in
+                    isScrubbing = editing
+                    player.setScrubbing(editing)
+                }
+                .disabled(!player.loaded)
+
+                HStack(spacing: 0) {
+                    Text(clock(isScrubbing ? scrubValue : player.elapsedTotal))
+                    Spacer()
+                    if player.loaded {
+                        Text("第 \(min(player.currentIndex + 1, player.segmentCount))/\(player.segmentCount) 段")
+                    } else {
+                        Text("没有音频")
                     }
+                    Spacer()
+                    Text("-" + clock(max(player.totalDuration - (isScrubbing ? scrubValue : player.elapsedTotal), 0)))
+                }
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var tabPicker: some View {
+        Picker("", selection: $tab) {
+            ForEach(DetailTab.allCases) { item in
+                Text(item.rawValue).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
+    private var missingView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "questionmark.folder")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("记录不存在，可能已经被删了")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func content(_ m: Meeting) -> some View {
+        switch tab {
+        case .transcript:
+            transcriptTab(m)
+        case .summary:
+            MeetingSummaryPanel(meetingID: meetingID)
+        case .audio:
+            audioTab(m)
+        case .export:
+            exportTab(m)
+        }
+    }
+
+    // MARK: - 转写
+
+    private func transcriptTab(_ m: Meeting) -> some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $transcriptDraft)
+                    .font(.footnote)
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+
+                if transcriptDraft.isEmpty {
+                    Text("还没有文字。可以把会议记录粘进来，也可以点下面的「自动转写」，把 \(m.segments.count) 段录音逐段转成文字。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 16)
+                        .allowsHitTesting(false)
                 }
             }
-        } header: {
-            Text("录音段")
-        } footer: {
-            Text("每一段都是独立完整的文件。能正常试听，就说明这段录音没有损坏。")
+            .background(Color(.systemBackground))
+
+            transcriptBar
         }
     }
 
-    private var textSection: some View {
-        Section {
-            TextEditor(text: $transcriptDraft)
-                .frame(minHeight: 140)
-                .font(.system(.footnote, design: .monospaced))
-            Button("保存文字") { saveTranscript() }
-            if !message.isEmpty {
-                Text(message).font(.caption).foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("会议文字")
-        } footer: {
-            Text("可以自动转写（下面），也可以手动粘会议记录、聊天记录或你自己的笔记。")
-        }
-    }
-
-    private func transcribeSection(_ m: Meeting) -> some View {
-        Section {
+    private var transcriptBar: some View {
+        HStack(spacing: 10) {
             NavigationLink {
                 TranscriptionView(meetingID: meetingID)
             } label: {
-                Label("自动转写录音", systemImage: "text.bubble")
+                Label("自动转写", systemImage: "text.bubble")
+                    .font(.footnote)
             }
-        } footer: {
-            Text("把上面 \(m.segments.count) 段录音逐段转成文字。建议先在里面点「只转写第 1 段」验证能不能用。")
-        }
-    }
+            .buttonStyle(.bordered)
 
-    private func aiSection(_ m: Meeting) -> some View {
-        Section {
-            NavigationLink {
-                MeetingSummaryView(meetingID: meetingID)
+            Button {
+                saveTranscript(silently: false)
             } label: {
-                Label("AI 纪要", systemImage: "wand.and.stars")
-                    .font(.headline)
+                Label("保存", systemImage: "square.and.arrow.down")
+                    .font(.footnote)
             }
-        } header: {
-            Text("AI 纪要")
-        } footer: {
-            if m.summaryJSON.isEmpty {
-                Text("基于会议文字生成摘要、决议、待办和日程，确认后可直接写进提醒事项和日历。")
+            .buttonStyle(.bordered)
+
+            Spacer(minLength: 0)
+
+            Button {
+                saveTranscript(silently: true)
+                tab = .summary
+            } label: {
+                Label("生成纪要", systemImage: "wand.and.stars")
+                    .font(.footnote)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    // MARK: - 录音段
+
+    private func audioTab(_ m: Meeting) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                if m.segments.isEmpty {
+                    Text("这场会议没有留下音频段。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 40)
+                } else {
+                    ForEach(Array(m.segments.enumerated()), id: \.element.id) { index, segment in
+                        segmentRow(index: index, segment: segment)
+                    }
+                }
+
+                if !m.markers.isEmpty {
+                    markersCard(m.markers)
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private func segmentRow(index: Int, segment: Meeting.AudioSegment) -> some View {
+        let active = player.loaded && player.currentIndex == index
+        return HStack(spacing: 12) {
+            Image(systemName: active && player.isPlaying ? "waveform" : "play.fill")
+                .font(.caption)
+                .frame(width: 28, height: 28)
+                .background(active ? Color.accentColor : Color.secondary.opacity(0.12), in: Circle())
+                .foregroundStyle(active ? Color.white : Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("第 \(index + 1) 段")
+                    .font(.subheadline.weight(.medium))
+                Text("从 \(clock(segment.startOffset)) 开始 · 时长 \(String(format: "%.0f", segment.durationSeconds)) 秒")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(segment.fileName)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(active ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.05),
+                              lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if active && player.isPlaying {
+                player.pause()
             } else {
-                Text("已生成过纪要（\(m.summaryJSON.count) 字符），点进去可以重看或重新生成。")
+                player.play(from: index)
             }
         }
     }
 
-    private func exportSection(_ m: Meeting) -> some View {
-        Section {
-            Button("导出为 Markdown 到「文件」App") { exportMarkdown(m) }
-            Button("复制 Markdown 到剪贴板") {
-                UIPasteboard.general.string = markdown(m)
-                message = "已复制到剪贴板"
+    private func markersCard(_ markers: [Double]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("录制时打的标记（\(markers.count) 个）", systemImage: "flag")
+                .font(.subheadline.weight(.medium))
+            Text(markers.map { clock($0) }.joined(separator: "、"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    // MARK: - 导出
+
+    private func exportTab(_ m: Meeting) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                card("导出", icon: "square.and.arrow.up") {
+                    Button {
+                        exportMarkdown(m)
+                    } label: {
+                        Label("导出为 Markdown 到「文件」App", systemImage: "doc.text")
+                            .font(.footnote)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        UIPasteboard.general.string = markdown(m)
+                        toast = "已复制到剪贴板"
+                    } label: {
+                        Label("复制 Markdown 到剪贴板", systemImage: "doc.on.doc")
+                            .font(.footnote)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                card("这场会议", icon: "info.circle") {
+                    infoLine("开始", m.startedAt.formatted(date: .numeric, time: .shortened))
+                    infoLine("时长", RecordingService.durationText(m.durationSeconds))
+                    infoLine("录音段", "\(m.segments.count) 段")
+                    infoLine("文字", m.transcript.isEmpty ? "（无）" : "\(m.transcript.count) 字")
+                    infoLine("纪要", m.summaryJSON.isEmpty ? "（还没生成）" : "已生成")
+                    infoLine("状态", m.status)
+                }
+
+                Text("免费签名只给 7 天，而且没有 iCloud。定期导出是唯一的保险，别等签名过期了才想起来。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-        } header: {
-            Text("导出")
-        } footer: {
-            Text("免费签名只给 7 天，而且没有 iCloud。定期导出是唯一的保险，别等签名过期了才想起来。")
+            .padding(16)
+        }
+    }
+
+    private func card<Content: View>(_ title: String,
+                                     icon: String,
+                                     @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: icon)
+                .font(.subheadline.weight(.semibold))
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func infoLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .leading)
+            Text(value)
+                .font(.caption)
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: - 工具栏
+
+    @ToolbarContentBuilder
+    private var topBarMenu: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button {
+                    titleDraft = meeting?.title ?? ""
+                    showRename = true
+                } label: {
+                    Label("重命名", systemImage: "pencil")
+                }
+                Button {
+                    if let m = meeting {
+                        UIPasteboard.general.string = markdown(m)
+                        toast = "已复制到剪贴板"
+                    }
+                } label: {
+                    Label("复制 Markdown", systemImage: "doc.on.doc")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("删除这场会议", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
         }
     }
 
     // MARK: - 动作
+
+    private func loadDrafts() {
+        guard !loadedDraft, let m = meeting else { return }
+        loadedDraft = true
+        titleDraft = m.title
+        transcriptDraft = m.transcript
+    }
+
+    private func loadPlayer() {
+        guard !loadedPlayer, let m = meeting, !m.segments.isEmpty else { return }
+        loadedPlayer = true
+        let directory = MeetingStore.recordingsDirectory()
+        player.load(urls: m.segments.map { directory.appendingPathComponent($0.fileName) },
+                    durations: m.segments.map { $0.durationSeconds })
+    }
 
     private func renameMeeting() {
         guard var m = meeting else { return }
@@ -196,18 +470,38 @@ struct MeetingDetailView: View {
         guard !trimmed.isEmpty else { return }
         m.title = trimmed
         store.update(m)
-        message = "标题已保存"
+        toast = "标题已改为「\(trimmed)」"
     }
 
-    private func saveTranscript() {
+    private func saveTranscript(silently: Bool) {
         guard var m = meeting else { return }
+        guard m.transcript != transcriptDraft else {
+            if !silently { toast = "文字没有变化" }
+            return
+        }
         m.transcript = transcriptDraft
-        if !m.transcript.isEmpty && m.status == "recorded" {
+        if !m.transcript.isEmpty && (m.status == "recorded" || m.status == "recovered") {
             m.status = "transcribed"
         }
         store.update(m)
-        message = "已保存 \(m.transcript.count) 字"
+        if !silently { toast = "已保存 \(m.transcript.count) 字" }
         AppLog.info("Meeting", "保存文字 \(m.transcript.count) 字")
+    }
+
+    private func deleteMeeting() {
+        guard let m = meeting else { return }
+        player.stop()
+        store.delete(m)
+        dismiss()
+    }
+
+    private func metaLine(_ m: Meeting) -> String {
+        var parts: [String] = []
+        parts.append(m.startedAt.formatted(date: .abbreviated, time: .shortened))
+        parts.append(RecordingService.durationText(m.durationSeconds))
+        parts.append("\(m.segments.count) 段录音")
+        if m.status == "recovered" { parts.append("⚠️ 意外中断恢复") }
+        return parts.joined(separator: " · ")
     }
 
     private func markdown(_ m: Meeting) -> String {
@@ -227,15 +521,33 @@ struct MeetingDetailView: View {
 
     private func exportMarkdown(_ m: Meeting) {
         let name = "\(m.title.replacingOccurrences(of: "/", with: "-")).md"
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(name)
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(name)
         do {
             try markdown(m).write(to: url, atomically: true, encoding: .utf8)
-            message = "已导出：\(name)"
+            toast = "已导出：\(name)"
             AppLog.info("Export", "导出 \(name)")
         } catch {
-            message = "导出失败：\(error.localizedDescription)"
-            AppLog.error("Export", message)
+            toast = "导出失败：\(error.localizedDescription)"
+            AppLog.error("Export", toast)
         }
+    }
+
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
+
+    /// mm:ss；超过一小时给 h:mm:ss
+    private func clock(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+        let total = Int(seconds)
+        let minutes = total / 60
+        let secs = total % 60
+        if minutes >= 60 {
+            return String(format: "%d:%02d:%02d", minutes / 60, minutes % 60, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
     }
 }
 
@@ -244,4 +556,5 @@ struct MeetingDetailView: View {
         MeetingDetailView(meetingID: "none")
     }
     .environmentObject(MeetingStore())
+    .environmentObject(SettingsStore())
 }

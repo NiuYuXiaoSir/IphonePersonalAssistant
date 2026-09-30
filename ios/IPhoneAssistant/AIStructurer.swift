@@ -1,9 +1,10 @@
 import Foundation
 
-/// AI 从一段自由文本里抽出来的一个可执行条目
-struct ParsedItem: Identifiable {
+/// AI 从一段自由文本里抽出来的一个可执行条目。
+/// 会随速记对话一起存进 chat.json，所以是 Codable。
+struct ParsedItem: Identifiable, Codable {
 
-    enum Kind: String {
+    enum Kind: String, Codable {
         case todo
         case event
         case note
@@ -25,7 +26,7 @@ struct ParsedItem: Identifiable {
         }
     }
 
-    let id = UUID()
+    var id = UUID()
     var kind: Kind
     var title: String
     var notes: String
@@ -51,6 +52,24 @@ struct ParsedItem: Identifiable {
         self.durationMinutes = durationMinutes
         self.priority = priority
         self.include = include
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, title, notes, dueDate, durationMinutes, priority, include
+    }
+
+    /// 手写解码：合成的解码器遇到缺字段会直接抛错，
+    /// 而这个结构体会被写进 chat.json 长期存着，以后加字段时旧数据必须还能读出来。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        kind = Kind(rawValue: (try? c.decode(String.self, forKey: .kind)) ?? "") ?? .todo
+        title = (try? c.decode(String.self, forKey: .title)) ?? ""
+        notes = (try? c.decode(String.self, forKey: .notes)) ?? ""
+        dueDate = (try? c.decode(String.self, forKey: .dueDate)) ?? ""
+        durationMinutes = (try? c.decode(Int.self, forKey: .durationMinutes)) ?? 0
+        priority = (try? c.decode(String.self, forKey: .priority)) ?? "normal"
+        include = (try? c.decode(Bool.self, forKey: .include)) ?? true
     }
 }
 
@@ -84,18 +103,22 @@ enum AIStructurer {
     5. 绝不编造原文里没有的时间、人名、优先级。不确定就把对应字段留空。
     6. 如果整段内容里没有任何可执行的事，返回 {"items": []}。
     7. 如果带了图片，先把图里的内容读出来（可能是白板照片、纸质笔记、聊天截图、名片、手写便签），把其中提到的待办、时间、人名一并抽取。图里的字看不清就不要猜，宁可不抽。
+    8. 如果用户是在改上一条结果（比如“第二条改成周五下午”“不要第一条了”），要结合【最近的对话】里已经列出的条目，把改完之后的完整清单重新输出一遍，不要只输出改动的那一条，也不要漏掉没被改动的条目。
     """
 
-    /// 调一次模型，把 text（可附图）拆成条目
+    /// 调一次模型，把 text（可附图）拆成条目。
+    /// history 是最近的对话摘要，用来让“第二条改成周五”这类追问能接上上文。
     static func parse(text: String,
                       images: [String] = [],
+                      history: String = "",
                       config: LLMConfig) async throws -> [ParsedItem] {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let user = """
-        今天是 \(todayDescription())。
-        需要抽取的内容：
-        \(body.isEmpty ? "（内容见附图）" : body)
-        """
+        var sections = ["今天是 \(todayDescription())。"]
+        if !history.isEmpty {
+            sections.append("【最近的对话】\n\(history)")
+        }
+        sections.append("需要抽取的内容：\n\(body.isEmpty ? "（内容见附图）" : body)")
+        let user = sections.joined(separator: "\n\n")
 
         AppLog.info("AI", "开始解析，输入 \(body.count) 字，附图 \(images.count) 张")
         let client = OpenAICompatibleClient(config: config)

@@ -2,216 +2,416 @@ import SwiftUI
 import UIKit
 import PhotosUI
 
-/// 速记页：输入一段话（打字 / 说话 / 拍张照）→ AI 拆成可执行条目 → 你确认 → 写入提醒事项 / 日历。
+/// 速记页：一句话（打字 / 说话 / 拍照）→ AI 拆成待办和日程 → 确认 → 写入提醒事项和日历。
+///
+/// 形态上做成一条对话：你说的话在右边，助手的回复和条目卡片在左边。
+/// 这样「接着说」是天然的——「第二条改成周五」能直接接上一条的结果，
+/// 不用先把上一段清掉再重新说一遍。
 struct AssistantView: View {
     @EnvironmentObject private var settings: SettingsStore
-
-    @State private var input = ""
-    @State private var items: [ParsedItem] = []
-    @State private var status = ""
-    @State private var busy = false
-
+    @StateObject private var chat = ChatStore()
     @StateObject private var liveASR = LiveSpeechRecognizer()
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var imageData: Data?
 
-    private let example = "明天下午三点跟老王过一下堵盖的方案，提前半小时提醒我；另外这周五之前把报价单发给采购"
+    @State private var draft = ""
+    @State private var attachments: [Attachment] = []
+    @State private var libraryItems: [PhotosPickerItem] = []
+    @State private var showLibrary = false
+    @State private var showCamera = false
+    @State private var showClearConfirm = false
+    @State private var toast = ""
+    /// 语音输入是「接着已经打的字往下说」，不是把输入框清空重来
+    @State private var voicePrefix = ""
+
+    /// 还没发出去的照片：先留在内存里，点发送时才落盘
+    private struct Attachment: Identifiable {
+        let id = UUID()
+        let data: Data
+        let image: UIImage
+    }
+
+    private let bottomAnchor = "chat-bottom"
+
+    private let examples = [
+        "明天下午三点跟老王过一下方案，提前半小时提醒我",
+        "这周五之前把报价单发给采购",
+        "下周一上午十点部门例会，一个小时"
+    ]
 
     var body: some View {
         NavigationStack {
-            List {
-                setupSection
-                inputSection
-                if let data = imageData, let ui = UIImage(data: data) {
-                    attachedSection(data: data, image: ui)
+            conversation
+                .background(Color(.systemBackground))
+                .navigationTitle("速记")
+                .navigationBarTitleDisplayMode(.inline)
+                .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+                .toolbar { toolbarContent }
+                .fullScreenCover(isPresented: $showCamera) {
+                    CameraPicker(isPresented: $showCamera) { attach($0) }
+                        .ignoresSafeArea()
                 }
-                if !items.isEmpty { reviewSection }
-                if !status.isEmpty { statusSection }
-            }
-            .navigationTitle("速记")
-            // 滑动列表即收起键盘。iOS 上没有“点空白收键盘”的惯例，滚动收起 + 键盘上方的按钮才是
-            .scrollDismissesKeyboard(.immediately)
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("收起键盘") { hideKeyboard() }
+                .photosPicker(isPresented: $showLibrary,
+                              selection: $libraryItems,
+                              maxSelectionCount: 4,
+                              matching: .images)
+                .onChange(of: libraryItems) { _, items in loadLibrary(items) }
+                .onChange(of: liveASR.liveText) { _, text in
+                    if liveASR.isRunning { draft = voicePrefix + text }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if !items.isEmpty {
-                        Button("清空") {
-                            items.removeAll()
-                            status = ""
-                        }
+                .onDisappear { if liveASR.isRunning { liveASR.stop() } }
+                .confirmationDialog("清空这段对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
+                    Button("清空", role: .destructive) { chat.clear() }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("对话记录和里面的图片都会被删掉。已经写进提醒事项和日历的条目不受影响。")
+                }
+                .alert("提示", isPresented: Binding(
+                    get: { !toast.isEmpty },
+                    set: { if !$0 { toast = "" } }
+                )) {
+                    Button("知道了") { toast = "" }
+                } message: {
+                    Text(toast)
+                }
+        }
+    }
+
+    // MARK: - 对话流
+
+    private var conversation: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    if chat.entries.isEmpty { welcome }
+                    ForEach(chat.entries) { entry in
+                        row(entry).id(entry.id)
                     }
+                    Color.clear.frame(height: 1).id(bottomAnchor)
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // 点消息之间的空白处收键盘。手势只挂在背景层上：
+                // 挂在 ScrollView 上会连卡片里的输入框一起抢，一点就失焦。
+                .background(
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { hideKeyboard() }
+                )
             }
-            .onChange(of: liveASR.liveText) { _, newValue in
-                // 语音进行中时，识别结果实时回填到输入框，用户可以边看边改
-                if liveASR.isRunning { input = newValue }
-            }
-            .onChange(of: pickerItem) { _, newItem in
-                loadPicked(newItem)
-            }
-            .onDisappear {
-                if liveASR.isRunning { liveASR.stop() }
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: chat.entries.count) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: chat.entries.last?.state) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: chat.entries.last?.items?.count) { _, _ in scrollToBottom(proxy) }
+            .onAppear {
+                DispatchQueue.main.async { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
             }
         }
     }
 
-    // MARK: - 区块
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        }
+    }
 
-    private var setupSection: some View {
-        Section {
+    /// 空对话时的开场白。顺手把几个例子做成可直接点开的引子——
+    /// 第一次用的人往往不知道该说多具体。
+    private var welcome: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("把要做的事说给我听")
+                    .font(.title3.weight(.semibold))
+                Text("打字、说话、拍张照片都行。我拆成待办和日程，你确认后写进提醒事项和日历。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             if settings.hasKey {
                 Label("凭证已就绪 · \(settings.model)", systemImage: "checkmark.seal")
-                    .font(.footnote)
+                    .font(.caption)
                     .foregroundStyle(.green)
             } else {
-                Label("还没配置 API Key，去「设置」页填一个", systemImage: "exclamationmark.triangle")
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-            }
-        }
-    }
-
-    private var inputSection: some View {
-        Section {
-            TextField("说一句话，比如：\(example)", text: $input, axis: .vertical)
-                .lineLimit(3...8)
-
-            HStack(spacing: 10) {
-                Button {
-                    toggleVoice()
-                } label: {
-                    Label(liveASR.isRunning ? "停止" : "说话",
-                          systemImage: liveASR.isRunning ? "stop.circle.fill" : "mic.fill")
-                }
-                .buttonStyle(.bordered)
-                .tint(liveASR.isRunning ? Color.red : Color.accentColor)
-
-                PhotosPicker(selection: $pickerItem, matching: .images) {
-                    Label("贴照片", systemImage: "photo")
-                }
-                .buttonStyle(.bordered)
-
-                Spacer()
-
-                Button(busy ? "处理中…" : "解析") { parse() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(busy || !canParse)
-            }
-
-            if liveASR.isRunning {
-                HStack(spacing: 6) {
-                    Image(systemName: "waveform")
-                        .foregroundStyle(.red)
-                        .symbolEffect(.variableColor)
-                    Text(input.isEmpty ? "在听…直接说话" : input)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if !liveASR.message.isEmpty && liveASR.message != "已停止" {
-                Text(liveASR.message)
+                Label("还没配置 API Key，先去「设置」页填一个", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-        } header: {
-            Text("输入")
-        } footer: {
-            Text("可以打字、可以说话、也可以贴一张照片（白板、纸质笔记、聊天截图都行）。滑动列表或点键盘上方的「收起键盘」即可关掉键盘。")
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("试一句")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                ForEach(examples, id: \.self) { text in
+                    Button {
+                        draft = text
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 10))
+                            Text(text)
+                                .font(.footnote)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(.secondarySystemBackground), in: Capsule())
+                        .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text("也可以拍白板、纸质笔记、聊天截图，我会把图里的待办和时间一起读出来。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.top, 24)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func row(_ entry: ChatEntry) -> some View {
+        if entry.role == .user {
+            userRow(entry)
+        } else {
+            assistantRow(entry)
         }
     }
 
-    private func attachedSection(data: Data, image: UIImage) -> some View {
-        Section {
-            HStack(spacing: 12) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(height: 110)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(Int(image.size.width)) × \(Int(image.size.height))")
-                        .font(.caption)
-                    Text("\(data.count / 1024) KB")
-                        .font(.caption2)
+    private func userRow(_ entry: ChatEntry) -> some View {
+        HStack {
+            Spacer(minLength: 40)
+            VStack(alignment: .trailing, spacing: 8) {
+                if !entry.images.isEmpty { imageStrip(entry.images) }
+                if !entry.text.isEmpty {
+                    Text(entry.text)
+                        .font(.callout)
+                        .foregroundStyle(.white)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.accentColor,
+                                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+            }
+            .contextMenu {
+                Button(role: .destructive) {
+                    chat.remove(id: entry.id)
+                } label: {
+                    Label("删除这条", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    private func imageStrip(_ names: [String]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(names, id: \.self) { name in
+                if let image = chat.thumbnail(named: name) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 88, height: 88)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                } else {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.secondary.opacity(0.15))
+                        .frame(width: 88, height: 88)
+                        .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                }
+            }
+        }
+    }
+
+    private func assistantRow(_ entry: ChatEntry) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if entry.state == .thinking {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(entry.text.isEmpty ? "正在整理…" : entry.text)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Button(role: .destructive) {
-                    imageData = nil
-                    pickerItem = nil
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.bordered)
-            }
-        } header: {
-            Text("附图")
-        } footer: {
-            Text("图片会被压到长边 1568 像素后发给模型。用 DeepSeek 时要选支持视觉的 deepseek-flash，deepseek-v4-pro 不支持图片。")
-        }
-    }
-
-    private var reviewSection: some View {
-        Section {
-            ForEach($items) { $item in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Toggle("", isOn: $item.include)
-                            .labelsHidden()
-                        Image(systemName: item.kind.symbol)
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                        TextField("标题", text: $item.title)
-                            .font(.headline)
-                    }
-                    HStack(spacing: 10) {
-                        TextField("时间（可留空）", text: $item.dueDate)
-                            .font(.caption)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        if item.kind == .event {
-                            TextField("分钟", value: $item.durationMinutes, format: .number)
-                                .font(.caption)
-                                .keyboardType(.numberPad)
-                                .frame(width: 56)
-                        }
-                        Text(item.kind.label)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !item.notes.isEmpty {
-                        TextField("备注", text: $item.notes)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
                 .padding(.vertical, 2)
+            } else if !entry.text.isEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 3)
+                    Text(entry.text)
+                        .font(.callout)
+                        .foregroundStyle(entry.state == .failed ? Color.orange : Color.primary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .onDelete { offsets in items.remove(atOffsets: offsets) }
 
-            Button(busy ? "写入中…" : "写入系统（\(items.filter { $0.include }.count) 条）") { writeAll() }
-                .disabled(busy || items.filter { $0.include }.isEmpty)
-        } header: {
-            Text("确认")
-        } footer: {
-            Text("只有勾选的条目会被写入。待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」，备忘暂不写入。")
+            if let items = entry.items, !items.isEmpty {
+                ItemsCard(items: itemsBinding(entry.id), busy: entry.busy) {
+                    write(entry.id)
+                }
+            }
+
+            if let result = entry.result {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .padding(.top, 2)
+                    Text(result)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemBackground),
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - 输入栏
+
+    private var composer: some View {
+        VStack(spacing: 8) {
+            if !liveASR.message.isEmpty && !liveASR.isRunning && liveASR.message != "已停止" {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                    Text(liveASR.message)
+                        .font(.caption2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !attachments.isEmpty { attachmentStrip }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                Menu {
+                    Button {
+                        openCamera()
+                    } label: {
+                        Label("拍照", systemImage: "camera")
+                    }
+                    Button {
+                        showLibrary = true
+                    } label: {
+                        Label("从相册选择", systemImage: "photo.on.rectangle")
+                    }
+                } label: {
+                    Image(systemName: "camera")
+                        .font(.system(size: 19))
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .disabled(busy)
+
+                TextField(liveASR.isRunning ? "在听…" : "发消息或按住说话…",
+                          text: $draft,
+                          axis: .vertical)
+                    .lineLimit(1...5)
+                    .font(.callout)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(.secondarySystemBackground),
+                                in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                Button {
+                    toggleVoice()
+                } label: {
+                    Image(systemName: liveASR.isRunning ? "waveform.circle.fill" : "waveform")
+                        .font(.system(size: 21))
+                        .foregroundStyle(liveASR.isRunning ? Color.red : Color.secondary)
+                        .frame(width: 32, height: 34)
+                        .contentShape(Rectangle())
+                        .symbolEffect(.variableColor, isActive: liveASR.isRunning)
+                }
+                .disabled(busy)
+
+                Button {
+                    send()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 27))
+                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .disabled(!canSend)
+            }
+            .padding(.bottom, liveASR.isRunning ? 2 : 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(attachments) { item in
+                    Image(uiImage: item.image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(alignment: .topTrailing) {
+                            Button {
+                                attachments.removeAll { $0.id == item.id }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 17))
+                                    .foregroundStyle(.white, .black.opacity(0.5))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(3)
+                        }
+                }
+            }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
         }
     }
 
-    private var statusSection: some View {
-        Section("结果") {
-            Text(status)
-                .font(.system(.footnote, design: .monospaced))
-                .textSelection(.enabled)
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .keyboard) {
+            Spacer()
+            Button("收起键盘") { hideKeyboard() }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if !chat.entries.isEmpty {
+                Menu {
+                    Button {
+                        showClearConfirm = true
+                    } label: {
+                        Label("清空对话", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
         }
     }
 
     // MARK: - 状态与工具
 
-    private var canParse: Bool {
-        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || imageData != nil
+    private var busy: Bool {
+        chat.entries.contains { $0.busy || $0.state == .thinking }
+    }
+
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
     private func hideKeyboard() {
@@ -219,118 +419,280 @@ struct AssistantView: View {
                                         to: nil, from: nil, for: nil)
     }
 
-    private func toggleVoice() {
-        if liveASR.isRunning {
-            liveASR.stop()
-            hideKeyboard()
+    private func itemsBinding(_ id: String) -> Binding<[ParsedItem]> {
+        Binding(
+            get: { chat.entry(id: id)?.items ?? [] },
+            set: { newValue in chat.update(id: id) { $0.items = newValue } }
+        )
+    }
+
+    private func openCamera() {
+        guard CameraPicker.isAvailable else {
+            toast = "这台设备没有可用的相机（模拟器上也没有）。用「从相册选择」吧。"
             return
         }
         hideKeyboard()
-        // 语音输入是“新增一句”，不是替换——保留已经打的字
-        let existing = input
-        input = existing
-        liveASR.start()
-        // 识别结果会通过 onChange 覆盖 input；这里先把已有内容记下来，避免被清掉
-        if !existing.isEmpty {
-            status = "语音输入会直接覆盖输入框内容。如果要追加，先把手打的字剪贴走。"
+        showCamera = true
+    }
+
+    private func attach(_ image: UIImage) {
+        guard let data = image.compressedForLLM() else {
+            toast = "这张照片读不出来（格式不支持）。"
+            return
+        }
+        attachments.append(Attachment(data: data, image: image))
+    }
+
+    private func loadLibrary(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        libraryItems = []
+        Task {
+            for item in items {
+                guard let raw = try? await item.loadTransferable(type: Data.self),
+                      let image = UIImage(data: raw) else { continue }
+                await MainActor.run { attach(image) }
+            }
         }
     }
 
-    private func loadPicked(_ newItem: PhotosPickerItem?) {
-        guard let newItem else { return }
-        Task {
-            do {
-                guard let raw = try await newItem.loadTransferable(type: Data.self) else {
-                    await MainActor.run { self.status = "读取图片失败（拿不到数据）" }
-                    return
-                }
-                await MainActor.run {
-                    if let ui = UIImage(data: raw), let compressed = ui.compressedForLLM() {
-                        self.imageData = compressed
-                        AppLog.info("Vision", "已选图：原始 \(raw.count / 1024) KB，压缩后 \(compressed.count / 1024) KB")
-                    } else {
-                        self.status = "这张图片读不出来（格式不支持）"
-                    }
-                }
-            } catch {
-                await MainActor.run { self.status = "读取图片出错：\(error.localizedDescription)" }
-            }
+    private func toggleVoice() {
+        if liveASR.isRunning {
+            liveASR.stop()
+            voicePrefix = ""
+            return
         }
+        hideKeyboard()
+        voicePrefix = draft
+        liveASR.start()
     }
 
     // MARK: - 动作
 
-    private func parse() {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        var images: [String] = []
-        if let data = imageData {
-            images = ["data:image/jpeg;base64,\(data.base64EncodedString())"]
-        }
-        guard !text.isEmpty || !images.isEmpty else { return }
-        if liveASR.isRunning { liveASR.stop() }
+    private func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !attachments.isEmpty else { return }
 
         let config = settings.makeConfig()
-        guard config.chatCompletionsURL != nil else {
-            status = "接口地址无效，去「设置」里看一下"
-            return
-        }
-        guard !config.apiKey.isEmpty else {
-            status = "还没有保存 API Key，去「设置」里填一个"
+        guard config.chatCompletionsURL != nil, !config.apiKey.isEmpty else {
+            toast = "还没有可用的 API Key，去「设置」页填一个再发。"
             return
         }
 
-        busy = true
-        status = "正在解析…"
+        if liveASR.isRunning { liveASR.stop() }
+        voicePrefix = ""
+        hideKeyboard()
+
+        // 图片先落盘，消息里只留文件名；发给模型时才读回来转 base64
+        let dataURLs = attachments.map { "data:image/jpeg;base64,\($0.data.base64EncodedString())" }
+        var user = ChatEntry(role: .user, text: text)
+        user.images = attachments.compactMap { chat.saveImage($0.data) }
+        draft = ""
+        attachments = []
+        chat.append(user)
+
+        let thinking = ChatEntry(role: .assistant, text: "", state: .thinking)
+        chat.append(thinking)
+        let history = chat.historyText()
 
         Task {
             do {
-                let parsed = try await AIStructurer.parse(text: text, images: images, config: config)
-                await MainActor.run {
-                    self.busy = false
-                    if parsed.isEmpty {
-                        self.status = "没能从这段内容里抽出可执行的条目。\n如果内容确实包含待办，把原文和诊断页的日志一并告诉我，我改 prompt。"
-                    } else {
-                        self.items.append(contentsOf: parsed)
-                        self.input = ""
-                        self.imageData = nil
-                        self.pickerItem = nil
-                        self.status = "解析出 \(parsed.count) 条，确认后点「写入系统」。"
-                    }
-                }
+                let items = try await AIStructurer.parse(text: text,
+                                                         images: dataURLs,
+                                                         history: history,
+                                                         config: config)
+                await MainActor.run { apply(items, to: thinking.id, error: nil) }
             } catch {
-                await MainActor.run {
-                    self.busy = false
-                    self.status = "解析失败：\(error.localizedDescription)"
-                }
+                await MainActor.run { apply([], to: thinking.id, error: error.localizedDescription) }
             }
         }
     }
 
-    private func writeAll() {
+    private func apply(_ items: [ParsedItem], to id: String, error: String?) {
+        chat.update(id: id) { entry in
+            if let error {
+                entry.state = .failed
+                entry.text = "这条没处理成功：\(error)"
+                return
+            }
+            entry.state = .ok
+            if items.isEmpty {
+                entry.text = """
+                这段里没有找到可以执行的事。\
+                如果是想让我记下一件事，可以说得更具体一点，比如「明天下午三点跟老王过方案」。
+                """
+            } else {
+                entry.text = "整理出 \(items.count) 条，核对一下，没问题就写进系统。"
+                entry.items = items
+            }
+        }
+    }
+
+    private func write(_ id: String) {
+        guard let entry = chat.entry(id: id), let items = entry.items else { return }
         let selected = items.filter { $0.include }
         guard !selected.isEmpty else {
-            status = "没有勾选任何条目"
+            chat.update(id: id) { $0.result = "没有勾选任何条目。" }
             return
         }
-        busy = true
-        status = "正在写入 \(selected.count) 条…"
+        chat.update(id: id) { $0.busy = true }
 
         Task {
             let result = await SystemWriter.writeAll(selected)
             await MainActor.run {
-                self.busy = false
-                var lines = ["成功 \(result.succeeded.count) 条"]
-                lines.append(contentsOf: result.succeeded.map { "  ✅ " + $0 })
-                if !result.failed.isEmpty {
-                    lines.append("失败 \(result.failed.count) 条")
-                    lines.append(contentsOf: result.failed.map { "  ❌ " + $0 })
+                chat.update(id: id) { entry in
+                    entry.busy = false
+                    entry.items = nil
+                    var lines: [String] = []
+                    if !result.succeeded.isEmpty {
+                        lines.append("已写入 \(result.succeeded.count) 条：")
+                        lines.append(contentsOf: result.succeeded.map { "· " + $0 })
+                    }
+                    if !result.failed.isEmpty {
+                        lines.append("失败 \(result.failed.count) 条：")
+                        lines.append(contentsOf: result.failed.map { "· " + $0 })
+                    }
+                    entry.result = lines.joined(separator: "\n")
+                    entry.text = result.failed.isEmpty
+                        ? "已写入 \(result.succeeded.count) 条。"
+                        : "写入完成：成功 \(result.succeeded.count) 条，失败 \(result.failed.count) 条。"
                 }
-                self.status = lines.joined(separator: "\n")
-                self.items.removeAll { $0.include }
             }
         }
     }
 }
+
+// MARK: - 条目卡片
+
+/// 助手消息里的那张卡片：勾选 / 改标题 / 改时间 / 写进系统。
+/// 它直接绑定到 ChatStore 里的那条消息，所以改完切页面再回来还在。
+private struct ItemsCard: View {
+
+    @Binding var items: [ParsedItem]
+    let busy: Bool
+    let onWrite: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach($items) { $item in
+                itemRow($item)
+                if $item.wrappedValue.id != items.last?.id {
+                    Divider().padding(.leading, 44)
+                }
+            }
+            Divider()
+            footer
+        }
+        .background(Color(.secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .disabled(busy)
+    }
+
+    private func itemRow(_ item: Binding<ParsedItem>) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Button {
+                item.wrappedValue.include.toggle()
+            } label: {
+                Image(systemName: item.wrappedValue.include ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(item.wrappedValue.include ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Image(systemName: item.wrappedValue.kind.symbol)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    TextField("标题", text: item.title, axis: .vertical)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1...3)
+                    Text(item.wrappedValue.kind.label)
+                        .font(.system(size: 10))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.14), in: Capsule())
+                        .foregroundStyle(Color.accentColor)
+                }
+
+                HStack(spacing: 8) {
+                    Image(systemName: "clock")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    TextField("时间（可留空）", text: item.dueDate)
+                        .font(.caption)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if item.wrappedValue.kind == .event {
+                        TextField("分钟", value: item.durationMinutes, format: .number)
+                            .font(.caption)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 42)
+                        Text("分钟")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !item.wrappedValue.notes.isEmpty {
+                    Text(item.wrappedValue.notes)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            Button(allSelected ? "全不选" : "全选") {
+                let target = !allSelected
+                for index in items.indices { items[index].include = target }
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+
+            Text("\(items.filter { $0.include }.count)/\(items.count) 条")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button(action: onWrite) {
+                HStack(spacing: 6) {
+                    if busy {
+                        ProgressView().controlSize(.mini)
+                    }
+                    Text(busy ? "写入中…" : "写入系统")
+                        .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(Color.accentColor, in: Capsule())
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(busy || items.allSatisfy { !$0.include })
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
+    private var allSelected: Bool {
+        !items.isEmpty && items.allSatisfy { $0.include }
+    }
+}
+
+// MARK: - 图片压缩
 
 extension UIImage {
     /// 压到适合发给模型的尺寸。

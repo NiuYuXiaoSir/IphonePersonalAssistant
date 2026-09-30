@@ -45,10 +45,11 @@ certutil -hashfile IPhoneAssistant-unsigned.ipa SHA256
 
 | 页面 | 功能 |
 |---|---|
-| 会议 | 一键录音（每 60 秒存一段、中断自动恢复、App 被杀后能找回）、列表、音频试听、Markdown 导出 |
-| 会议 → 详情 → 自动转写 | 逐段 Apple Speech 识别，单段超时保护、逐段增量保存 |
-| 会议 → 详情 → AI 纪要 | 生成摘要/议题/决议/待办/日程/未决问题，审阅后写入提醒事项与日历 |
-| 速记 | 一句话 → AI 拆成待办/日程/备忘 → 确认 → 写入系统 |
+| 会议 | 一键录音（每 60 秒存一段、中断自动恢复、App 被杀后能找回）。列表按 **年 → 月 → 日** 三层折叠，默认展开最近一天，可按标题或会议文字搜索 |
+| 会议 → 详情 | 顶部固定播放条（整场连续播放、跨段拖动定位、点某一段从那里播）+「转写 / 纪要 / 录音 / 导出」四个分页 |
+| 会议 → 详情 → 转写 | 逐段 Apple Speech 识别，单段超时保护、逐段增量保存 |
+| 会议 → 详情 → 纪要 | 生成摘要/议题/决议/待办/日程/未决问题，审阅后写入提醒事项与日历 |
+| 速记 | 聊天式：打字 / 说话 / **拍照或选相册** → AI 拆成待办/日程/备忘 → 在对话里勾选确认 → 写入系统。可以接着上一条改（「第二条改成周五」） |
 | 设置 | DeepSeek 官方 / OpenCode Zen / 自定义，API Key 存 Keychain，带真实连接测试 |
 | 诊断 | E1 探针（后台录音、EventKit 读写、签名信息）+ 运行日志导出 |
 
@@ -65,19 +66,22 @@ ios/IPhoneAssistant/
   LLMProvider.swift               供应商预设
   LLMService.swift                OpenAI 兼容客户端
   SettingsStore.swift             设置与 Keychain 凭证
-  AssistantView.swift             速记页
+  AssistantView.swift             速记页（聊天式）
+  ChatStore.swift                 速记对话的存储（chat.json + chatImages/）
+  CameraPicker.swift              相机拍照
   AIStructurer.swift              文本 → 结构化条目
   SystemWriter.swift              写提醒事项 / 日历
 
   RecordingService.swift          分段录音
   MeetingStore.swift              会议存储与孤儿段恢复
-  MeetingsView.swift              会议列表
+  MeetingsView.swift              会议列表（年月日折叠）
   RecordView.swift                录音页
-  MeetingDetailView.swift         会议详情
+  MeetingDetailView.swift         会议详情（播放条 + 四个分页）
+  MeetingPlayer.swift             跨段连续播放
   TranscriptionService.swift      语音识别
   TranscriptionView.swift         转写页
   MeetingSummarizer.swift         会议纪要 prompt 与解析
-  MeetingSummaryView.swift        纪要页
+  MeetingSummaryPanel.swift       纪要面板（嵌在详情页里）
 
   ProbeStore.swift / ContentView.swift   诊断页（E1 探针）
 ```

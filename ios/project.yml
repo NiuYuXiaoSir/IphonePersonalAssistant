@@ -52,6 +52,7 @@ targets:
         # —— 权限声明 ——
         NSMicrophoneUsageDescription: 录制会议音频，用于会后转写与总结。
         NSSpeechRecognitionUsageDescription: 把会议录音转成文字，用于生成纪要。
+        NSCameraUsageDescription: 速记时拍照（白板、纸质笔记、名片），用于识别其中的待办与时间。
         NSCalendarsFullAccessUsageDescription: 读取和写入日历，用于管理你的工作日程。
         NSRemindersFullAccessUsageDescription: 读取和写入提醒事项，用于管理你的待办。
         # 后台持续录音的前提
