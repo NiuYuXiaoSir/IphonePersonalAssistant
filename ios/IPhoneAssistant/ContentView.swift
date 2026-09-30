@@ -108,7 +108,7 @@ struct DiagnosticsView: View {
         } header: {
             Text("④ 日历与提醒事项（EventKit）")
         } footer: {
-            Text("第三项走的就是「AI 解析 → 一键生成待办」的完整写入路径。")
+            Text("第三项走的是和「速记」页保存待办完全相同的写入路径。")
         }
     }
 

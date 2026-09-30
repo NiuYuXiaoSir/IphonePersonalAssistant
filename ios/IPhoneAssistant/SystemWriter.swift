@@ -29,10 +29,12 @@ enum SystemWriter {
 
     // MARK: - 提醒事项
 
+    /// remindBeforeMinutes：提前几分钟提醒。0 表示到点提醒（也就是用户说「提醒我」时最自然的那种）。
     static func writeReminder(title: String,
                               notes: String,
                               dueDate: String,
-                              priority: String) async throws {
+                              priority: String,
+                              remindBeforeMinutes: Int = 0) async throws {
         let store = EKEventStore()
         guard try await ensureRemindersAccess(store) else {
             throw WriteError.denied("提醒事项")
@@ -53,12 +55,14 @@ enum SystemWriter {
         }
         if let comps = dateComponents(from: dueDate, defaultHour: 9) {
             reminder.dueDateComponents = comps
-            reminder.addAlarm(EKAlarm(relativeOffset: -300))
+            // 之前固定写死「提前 5 分钟」，于是「10 分钟后提醒我」会在 5 分钟后弹出来。
+            // 现在默认到点提醒，只有用户明说了「提前半小时」才提前。
+            reminder.addAlarm(EKAlarm(relativeOffset: TimeInterval(-60 * max(0, remindBeforeMinutes))))
         }
 
         do {
             try store.save(reminder, commit: true)
-            AppLog.info("EventKit", "已写入待办「\(title)」截止=\(dueDate.isEmpty ? "无" : dueDate)")
+            AppLog.info("EventKit", "已写入待办「\(title)」截止=\(dueDate.isEmpty ? "无" : dueDate)，提前 \(max(0, remindBeforeMinutes)) 分钟提醒")
         } catch {
             AppLog.error("EventKit", "写待办失败：\(error.localizedDescription)")
             throw WriteError.saveFailed(error.localizedDescription)
@@ -93,7 +97,7 @@ enum SystemWriter {
         let calendar = try ensureCalendar(store, source: source)
 
         guard let start = date(from: dueDate, defaultHour: 9) else {
-            throw WriteError.saveFailed("日程必须有明确时间，但没能从「\(dueDate)」里解析出来。请把时间补成 2026-10-08 15:00 这种格式")
+            throw WriteError.saveFailed("日程必须有个开始时间，但没能从「\(dueDate)」里认出时间。请写成 2026-10-08 15:00 这样的格式")
         }
         let minutes = durationMinutes > 0 ? durationMinutes : 60
 
@@ -129,21 +133,45 @@ enum SystemWriter {
 
     /// 把模型给的日期字符串变成 Date。
     /// 只有日期没有时刻时，补一个默认小时（日程默认 9 点，待办默认 9 点）。
+    ///
+    /// 格式放宽是有意的：模型有时给 ISO8601（带 T、带时区），有时顺手写成「2026年9月30日 21:05」，
+    /// 解析失败会变成「这条没有时间」，比时间差一点更难看出来。
+    /// 注意格式数组的顺序——越具体的越靠前，否则 `yyyy-M-d` 会把「2026-09-30 21:15」只解析出日期部分。
     static func date(from string: String, defaultHour: Int) -> Date? {
         let t = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return nil }
+
+        if t.contains("T") || t.hasSuffix("Z") {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = iso.date(from: t) { return d }
+            iso.formatOptions = [.withInternetDateTime]
+            if let d = iso.date(from: t) { return d }
+        }
+
+        let normalized = t
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "年", with: "-")
+            .replacingOccurrences(of: "月", with: "-")
+            .replacingOccurrences(of: "日", with: " ")
+            .replacingOccurrences(of: "时", with: ":")
+            .replacingOccurrences(of: "分", with: "")
+            .replacingOccurrences(of: "T", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = .current
 
-        for fmt in ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH", "yyyy-MM-dd"] {
+        for fmt in ["yyyy-M-d H:mm:ss", "yyyy-M-d H:mm", "yyyy-M-d H", "yyyy-M-d"] {
             df.dateFormat = fmt
-            guard let d = df.date(from: t) else { continue }
-            if fmt == "yyyy-MM-dd" {
+            guard let d = df.date(from: normalized) else { continue }
+            if fmt == "yyyy-M-d" {
                 return Calendar.current.date(bySettingHour: defaultHour, minute: 0, second: 0, of: d)
             }
             return d
         }
+        AppLog.warn("EventKit", "时间解析失败：「\(t)」")
         return nil
     }
 

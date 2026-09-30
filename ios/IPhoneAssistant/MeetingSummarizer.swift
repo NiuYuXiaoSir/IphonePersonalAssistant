@@ -63,7 +63,7 @@ enum MeetingSummarizer {
     规则：
     1. action_items 每一条都必须在原文里有依据，source_quote 要引用原句。找不到依据的不要写。
     2. 绝不编造原文没有的负责人、时间、金额、数字。
-    3. 相对时间（“下周三”“月底前”）以用户在消息里给出的【今天】为基准换算成绝对日期。
+    3. 相对时间（“下周三”“月底前”“后天上午”）一律以用户在消息里给出的【现在】为基准换算成绝对日期，那是带时刻的真实当前时间。不要凭空给时刻。
     4. 原文有错别字或同音字时，结合上下文纠正后写入，但不要改变原意。
     5. 只写进 calendar_events 的是“会上确定的、以后要发生的事”（如“下周一开评审会”）。待办自己的截止时间不算事件。
     6. 没有内容的字段返回空数组或空字符串，**不要省略字段**。
@@ -72,7 +72,7 @@ enum MeetingSummarizer {
     /// 调模型生成纪要，返回经过校验的 JSON 文本（校验不过就抛错，不存）
     static func generate(transcript: String, config: LLMConfig) async throws -> String {
         let user = """
-        今天是 \(AIStructurer.todayDescription())。
+        现在是 \(AIStructurer.nowDescription())。
         会议文字记录如下：
         ---
         \(transcript)

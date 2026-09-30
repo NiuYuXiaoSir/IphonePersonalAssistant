@@ -14,7 +14,8 @@ extension SystemWriter {
                     try await writeReminder(title: item.title,
                                             notes: item.notes,
                                             dueDate: item.dueDate,
-                                            priority: item.priority)
+                                            priority: item.priority,
+                                            remindBeforeMinutes: item.remindBeforeMinutes)
                     ok.append("待办 · \(item.title)")
                 case .event:
                     try await writeEvent(title: item.title,
@@ -23,8 +24,9 @@ extension SystemWriter {
                                          durationMinutes: item.durationMinutes)
                     ok.append("日程 · \(item.title)")
                 case .note:
-                    AppLog.info("Writer", "备忘未写入系统（待做快捷指令桥接）：\(item.title)")
-                    ok.append("备忘（仅记录）· \(item.title)")
+                    // 备忘录没有公开的写入 API，存进 App 自己的备忘列表
+                    NoteStore.shared.add(title: item.title, body: item.notes)
+                    ok.append("备忘 · \(item.title)")
                 }
             } catch {
                 bad.append("\(item.title)：\(error.localizedDescription)")

@@ -49,9 +49,12 @@ certutil -hashfile IPhoneAssistant-unsigned.ipa SHA256
 | 会议 → 详情 | 顶部固定播放条（整场连续播放、跨段拖动定位、点某一段从那里播）+「转写 / 纪要 / 录音 / 导出」四个分页 |
 | 会议 → 详情 → 转写 | 逐段 Apple Speech 识别，单段超时保护、逐段增量保存 |
 | 会议 → 详情 → 纪要 | 生成摘要/议题/决议/待办/日程/未决问题，审阅后写入提醒事项与日历 |
-| 速记 | 聊天式：打字 / 说话 / **拍照或选相册** → AI 拆成待办/日程/备忘 → 在对话里勾选确认 → 写入系统。可以接着上一条改（「第二条改成周五」） |
+| 对话 | 说一句话（打字 / 说话 / **拍照或选相册**）就把里面的待办、日程、备忘建出来，没有「解析」这一步。结果以卡片回到对话里，勾选确认后写进系统；可以接着上一条改（「第二条改成周五」） |
+| 速记 | 手动新建：选类型（待办 / 日程 / 备忘）→ 填标题和时间 → 保存。不联网、不需要 API Key |
 | 设置 | DeepSeek 官方 / OpenCode Zen / 自定义，API Key 存 Keychain，带真实连接测试 |
 | 诊断 | E1 探针（后台录音、EventKit 读写、签名信息）+ 运行日志导出 |
+
+关于时间：发给模型的上下文里带的是**当前时刻**（含时区和星期），不是只有日期。像「10 分钟后提醒我」这种相对表达，除了让模型换算，客户端还会按本地时间再算一遍绝对时间覆盖掉模型给的值——模型的日期算术错得很有规律，而错的往往正是最要紧的那条。提醒默认到点弹通知，只有明说「提前半小时提醒我」才会提前。
 
 ## 目录结构
 
@@ -60,17 +63,19 @@ certutil -hashfile IPhoneAssistant-unsigned.ipa SHA256
 ci/build-error.log                编译失败时自动写入的诊断信息
 ios/project.yml                   XcodeGen 工程描述（权限声明都在这里）
 ios/IPhoneAssistant/
-  App.swift / RootView.swift      入口与四页签
+  App.swift / RootView.swift      入口与五个页签
   AppLog.swift                    结构化日志（无 Mac 开发的基础设施）
 
   LLMProvider.swift               供应商预设
   LLMService.swift                OpenAI 兼容客户端
   SettingsStore.swift             设置与 Keychain 凭证
-  AssistantView.swift             速记页（聊天式）
-  ChatStore.swift                 速记对话的存储（chat.json + chatImages/）
+  ChatView.swift                  对话页（说话即创建）
+  ChatStore.swift                 对话的存储（chat.json + chatImages/）
   CameraPicker.swift              相机拍照
-  AIStructurer.swift              文本 → 结构化条目
+  AssistantView.swift             速记页（手动新建表单）
+  AIStructurer.swift              文本 → 结构化条目、相对时间换算
   SystemWriter.swift              写提醒事项 / 日历
+  NoteStore.swift                 备忘存储（notes.json，备忘录没有公开写入接口）
 
   RecordingService.swift          分段录音
   MeetingStore.swift              会议存储与孤儿段恢复
