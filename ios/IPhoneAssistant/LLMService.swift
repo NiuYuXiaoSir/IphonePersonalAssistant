@@ -3,10 +3,26 @@ import Foundation
 struct ChatMessage: Codable {
     let role: String
     let content: String
+    /// 附图，以 data URL 形式附加（data:image/jpeg;base64,xxxx）
+    var images: [String] = []
 
     static func system(_ c: String) -> ChatMessage { ChatMessage(role: "system", content: c) }
     static func user(_ c: String) -> ChatMessage { ChatMessage(role: "user", content: c) }
     static func assistant(_ c: String) -> ChatMessage { ChatMessage(role: "assistant", content: c) }
+
+    /// 转成 API 需要的形状。
+    /// 没有图片时 content 是普通字符串；有图片时是 OpenAI 风格的多模态数组——
+    /// DeepSeek 的 flash 模型支持这种视觉输入（v4-pro 不支持）。
+    var payload: [String: Any] {
+        guard !images.isEmpty else {
+            return ["role": role, "content": content]
+        }
+        var parts: [[String: Any]] = [["type": "text", "text": content]]
+        for dataURL in images {
+            parts.append(["type": "image_url", "image_url": ["url": dataURL]])
+        }
+        return ["role": role, "content": parts]
+    }
 }
 
 enum LLMError: LocalizedError {
@@ -58,13 +74,18 @@ final class OpenAICompatibleClient: LLMService {
             throw LLMError.http(0, "还没有填写 API Key")
         }
 
+        let imageCount = messages.reduce(0) { $0 + $1.images.count }
         var body: [String: Any] = [
             "model": config.model,
-            "messages": messages.map { ["role": $0.role, "content": $0.content] },
+            "messages": messages.map { $0.payload },
             "stream": false
         ]
         if jsonMode {
+            // JSON 模式和视觉输入不能同时用，有些网关会直接报错，所以带图时关掉
             body["response_format"] = ["type": "json_object"]
+            if imageCount > 0 {
+                AppLog.warn("LLM", "本次带图 \(imageCount) 张，但仍要求 JSON 输出，如果服务端报错就取消勾选图片重试")
+            }
         }
 
         var request = URLRequest(url: url)
@@ -73,8 +94,8 @@ final class OpenAICompatibleClient: LLMService {
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        // 日志里绝不写 API Key，只写地址、模型和耗时
-        AppLog.info("LLM", "POST \(url.absoluteString) model=\(config.model) json=\(jsonMode)")
+        // 日志里绝不写 API Key，只写地址、模型、体积和耗时
+        AppLog.info("LLM", "POST \(url.absoluteString) model=\(config.model) json=\(jsonMode) 图=\(imageCount) 请求体=\(request.httpBody?.count ?? 0) 字节")
         let started = Date()
 
         let data: Data
