@@ -59,6 +59,8 @@ enum BalanceService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        // OpenCode 的网关对每个请求都要那个会话头，余额查询也一样
+        OpenAICompatibleClient.applyOpenCodeHeaders(to: &request, config: config)
 
         // 日志里只写地址，不写密钥
         AppLog.info("Balance", "查余额 GET \(url.absoluteString)")

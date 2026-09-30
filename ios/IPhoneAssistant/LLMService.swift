@@ -95,6 +95,7 @@ final class OpenAICompatibleClient: LLMService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        Self.applyOpenCodeHeaders(to: &request, config: config)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         // 日志里绝不写 API Key，只写地址、模型、体积和耗时
@@ -125,6 +126,20 @@ final class OpenAICompatibleClient: LLMService {
         return try Self.extractContent(from: data)
     }
 
+    /// OpenCode 的网关（zen 与 zen/go）除了密钥还要两样东西：
+    ///
+    ///   - `User-Agent` 必须是调用方自己的名字。它们的文档明确说不接受 SDK
+    ///     或 HTTP 库的默认 UA，所以这里自报家门。
+    ///   - `x-opencode-session` 一个稳定的会话 id，缺了会直接
+    ///     400 MissingSessionID —— 它拿这个 id 做路由亲和和 prompt 缓存。
+    ///
+    /// 别的服务（DeepSeek 官方、自建）不需要这两个头，所以只对 opencode.ai 的地址加。
+    static func applyOpenCodeHeaders(to request: inout URLRequest, config: LLMConfig) {
+        guard config.isOpenCodeHost else { return }
+        request.setValue(LLMConfig.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(config.effectiveSessionID, forHTTPHeaderField: "x-opencode-session")
+    }
+
     /// 拉一次模型清单。
     /// 各家的形状不完全一样：标准的是 {"data":[{"id":"..."}]}，也有直接给字符串数组的。
     static func listModels(config: LLMConfig) async throws -> [String] {
@@ -132,6 +147,7 @@ final class OpenAICompatibleClient: LLMService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        applyOpenCodeHeaders(to: &request, config: config)
 
         AppLog.info("LLM", "拉取模型列表 \(url.absoluteString)")
         let (data, response) = try await URLSession.shared.data(for: request)

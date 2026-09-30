@@ -389,7 +389,7 @@ struct MeetingSummaryPanel<Header: View>: View {
     }
 
     private func generate(_ m: Meeting) {
-        let config = settings.makeConfig()
+        var config = settings.makeConfig()
         guard config.chatCompletionsURL != nil else {
             status = "接口地址无效，去「设置」里看一下"
             return
@@ -398,6 +398,8 @@ struct MeetingSummaryPanel<Header: View>: View {
             status = "还没有保存密钥，去「设置」里填一个"
             return
         }
+        // 这一场会议自己的 id，OpenCode 的网关按它做路由与缓存
+        config.sessionID = m.id
 
         busy = true
         status = "正在请求模型…"

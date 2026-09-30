@@ -591,11 +591,13 @@ struct ChatView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
 
-        let config = settings.makeConfig()
+        var config = settings.makeConfig()
         guard config.chatCompletionsURL != nil, !config.apiKey.isEmpty else {
             toast = "还没有可用的密钥，去「设置」页填一个再发。"
             return
         }
+        // 这一段对话自己的 id，OpenCode 的网关按它做路由与缓存
+        config.sessionID = threadID
 
         if liveASR.isRunning { liveASR.stop() }
         voicePrefix = ""

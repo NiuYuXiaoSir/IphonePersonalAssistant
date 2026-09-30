@@ -68,6 +68,10 @@ struct LLMConfig {
     var baseURL: String
     var model: String
     var apiKey: String
+    /// 这一段对话的稳定标识。OpenCode 的网关要求每个请求都带（x-opencode-session），
+    /// 它据此做路由和 prompt 缓存，缺了直接 400 MissingSessionID。
+    /// 调用方填对话/会议自己的 id；不填就退回设备级的那一个。
+    var sessionID: String = ""
 
     /// 把 base URL 拼成 chat completions 端点
     var chatCompletionsURL: URL? { endpoint("chat/completions") }
@@ -76,10 +80,46 @@ struct LLMConfig {
     /// 用来确认套餐里到底给了哪些模型名。
     var modelsURL: URL? { endpoint("models") }
 
+    /// 是不是 OpenCode 的网关（zen/go 与 zen）。只有它要上面那个会话头。
+    var isOpenCodeHost: Bool {
+        baseURL.lowercased().contains("opencode.ai")
+    }
+
+    /// 真正发出去的会话 id
+    var effectiveSessionID: String {
+        let trimmed = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? SessionIdentity.current : trimmed
+    }
+
+    /// 客户端自己的标识。这类网关按它区分调用方，不接受 SDK 或 HTTP 库的默认 UA。
+    static let userAgent: String = {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        return "IPhoneAssistant/\(version)"
+    }()
+
     private func endpoint(_ path: String) -> URL? {
         var s = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while s.hasSuffix("/") { s.removeLast() }
         guard !s.isEmpty, s.lowercased().hasPrefix("http") else { return nil }
         return URL(string: s + "/" + path)
+    }
+}
+
+/// OpenCode 网关要的那个会话 id。
+///
+/// 一台设备一份，第一次用到时生成并存进偏好里，之后一直不变——
+/// 它只是给服务端做路由亲和与缓存用的不透明字符串，不含任何用户信息。
+/// 有对话的请求应该用 LLMConfig.sessionID 传更准的那个 id，这里兜底
+/// 那些没有「对话」概念的请求（模型列表、余额查询、连接测试）。
+enum SessionIdentity {
+    private static let key = "llm.opencodeSessionID"
+
+    static var current: String {
+        if let saved = UserDefaults.standard.string(forKey: key), !saved.isEmpty {
+            return saved
+        }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
     }
 }

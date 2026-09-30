@@ -222,7 +222,9 @@ struct RecordView: View {
     }
 
     private func runAutoSummary(meetingID: String, transcript: String) {
-        let config = settings.makeConfig()
+        var config = settings.makeConfig()
+        // 这一场会议自己的 id，OpenCode 的网关按它做路由与缓存
+        config.sessionID = meetingID
         summaryMessage = "正在生成纪要…"
 
         Task {
