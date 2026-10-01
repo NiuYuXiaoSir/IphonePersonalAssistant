@@ -51,6 +51,8 @@ struct RecordView: View {
 
     private var headerBlock: some View {
         VStack(spacing: 6) {
+            // 这里是「录到的时长」，不是「开始到现在过了多久」。
+            // 中断期间录音是停的，钟也停下来，免得再出现「显示 59 分钟、其实只录了 4 分钟」。
             Text(clock(recorder.elapsed))
                 .font(.system(size: 56, weight: .light, design: .monospaced))
                 .monospacedDigit()
@@ -59,6 +61,16 @@ struct RecordView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+            if recorder.isWaitingForAudio || recorder.lostSeconds > 0.5 {
+                Label(recorder.lostSeconds > 0.5
+                      ? "中断漏录 \(RecordingService.durationText(recorder.lostSeconds))（这段时间没有音频）"
+                      : "音频被系统抢走了，正在自动重连",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(YBColor.warning)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
         }
     }
 
@@ -150,7 +162,7 @@ struct RecordView: View {
     }
 
     private var footerNote: some View {
-        Text("录音期间可以锁屏、可以切到别的应用。来电或闹钟打断后会尝试自动接上。边录边转读的是已经落盘的文件，不会影响录音。")
+        Text("录音期间可以锁屏、可以切到别的应用。来电或闹钟打断后会立刻把已录到的一段封存，然后每几秒试着接上，接上之前的时间是没有音频的（会单独标出来）。边录边转读的是已经落盘的文件，不会影响录音。")
             .font(.caption2)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)

@@ -30,6 +30,10 @@ struct MeetingDetailView: View {
     @State private var toast = ""
     @State private var showRename = false
     @State private var showDeleteConfirm = false
+    /// 合并多段录音的时候禁用按钮，避免连点
+    @State private var merging = false
+    /// 刚合并出来的整文件，用来直接分享（分享要走系统的分享面板）
+    @State private var mergedFile: URL?
 
     private let tabTitles = ["转写", "纪要", "录音", "导出"]
     private let tabIcons = ["text.alignleft", "wand.and.stars", "waveform", "square.and.arrow.up"]
@@ -374,6 +378,21 @@ struct MeetingDetailView: View {
                     .buttonStyle(YBPaperButtonStyle())
 
                     Button {
+                        mergeAudio(m)
+                    } label: {
+                        Label(merging ? "正在合并…" : "合并成一个音频文件（.m4a）", systemImage: "waveform.badge.plus")
+                    }
+                    .buttonStyle(YBPaperButtonStyle())
+                    .disabled(merging)
+
+                    if let file = mergedFile {
+                        ShareLink(item: file) {
+                            Label("分享 \(file.lastPathComponent)", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(YBPaperButtonStyle())
+                    }
+
+                    Button {
                         UIPasteboard.general.string = markdown(m)
                         toast = "已复制到剪贴板"
                     } label: {
@@ -385,6 +404,9 @@ struct MeetingDetailView: View {
                 paperCard("这场会议", icon: "info.circle") {
                     infoLine("开始", m.startedAt.formatted(date: .numeric, time: .shortened))
                     infoLine("时长", RecordingService.durationText(m.durationSeconds))
+                    if let gap = m.gapSeconds, gap > 0.5 {
+                        infoLine("中断漏录", RecordingService.durationText(gap))
+                    }
                     infoLine("录音段", "\(m.segments.count) 段")
                     infoLine("文字", m.transcript.isEmpty ? "（无）" : "\(m.transcript.count) 字")
                     infoLine("纪要", m.summaryJSON.isEmpty ? "（还没生成）" : "已生成")
@@ -399,6 +421,29 @@ struct MeetingDetailView: View {
             .padding(.horizontal, 16)
             .padding(.top, 16)
             .padding(.bottom, 20)
+        }
+    }
+
+    /// 分段是录音安全的保险，但导出、发人、存档都想要一个整文件。
+    /// 合并结果落在 Documents 根目录，文件名带「完整录音」。
+    private func mergeAudio(_ m: Meeting) {
+        guard !merging else { return }
+        merging = true
+        toast = "正在合并 \(m.segments.count) 段录音…"
+        Task {
+            do {
+                let url = try await MeetingAudioExport.merge(meeting: m)
+                await MainActor.run {
+                    merging = false
+                    mergedFile = url
+                    toast = "已合并：\(url.lastPathComponent)\n可以直接分享，也可以去「文件 → 私人助理」里找。"
+                }
+            } catch {
+                await MainActor.run {
+                    merging = false
+                    toast = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -543,7 +588,10 @@ struct MeetingDetailView: View {
     private func metaLine(_ m: Meeting) -> String {
         var parts: [String] = []
         parts.append(m.startedAt.formatted(date: .numeric, time: .shortened))
-        parts.append(RecordingService.durationText(m.durationSeconds))
+        parts.append("录到 " + RecordingService.durationText(m.durationSeconds))
+        if let gap = m.gapSeconds, gap > 0.5 {
+            parts.append("中断漏录 " + RecordingService.durationText(gap))
+        }
         parts.append("\(m.segments.count) 段录音")
         if m.status == "recovered" { parts.append("意外中断恢复") }
         return parts.joined(separator: " · ")
@@ -552,7 +600,10 @@ struct MeetingDetailView: View {
     private func markdown(_ m: Meeting) -> String {
         var out = "# \(m.title)\n\n"
         out += "- 开始：\(m.startedAt.formatted(date: .numeric, time: .shortened))\n"
-        out += "- 时长：\(RecordingService.durationText(m.durationSeconds))\n"
+        out += "- 时长（实际录到）：\(RecordingService.durationText(m.durationSeconds))\n"
+        if let gap = m.gapSeconds, gap > 0.5 {
+            out += "- 中断漏录：\(RecordingService.durationText(gap))（来电/闹钟打断，这段时间没有音频）\n"
+        }
         out += "- 录音段：\(m.segments.count)\n"
         if !m.markers.isEmpty {
             out += "- 标记点：\(m.markers.map { "\(Int($0))s" }.joined(separator: ", "))\n"

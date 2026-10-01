@@ -16,7 +16,10 @@ struct Meeting: Codable, Identifiable {
     var title: String
     var startedAt: Date
     var endedAt: Date?
+    /// 实际录到的音频总长（不是从开始到结束过了多久）
     var durationSeconds: Double
+    /// 中途因中断（来电/闹钟）漏掉的秒数。老的记录里没有这个字段，所以是可选的。
+    var gapSeconds: Double?
     var segments: [AudioSegment]
     /// 录制中用户打的标记点，秒
     var markers: [Double]

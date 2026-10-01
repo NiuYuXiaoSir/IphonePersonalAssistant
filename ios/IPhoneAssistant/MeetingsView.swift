@@ -338,7 +338,10 @@ struct MeetingsView: View {
 
     /// 一行灰字说清这场会的关键信息，比挂一排彩色小标签安静得多
     private func metaLine(_ m: Meeting) -> String {
-        var parts = [timeText(m.startedAt), RecordingService.durationText(m.durationSeconds)]
+        var parts = [timeText(m.startedAt), "录到 " + RecordingService.durationText(m.durationSeconds)]
+        if let gap = m.gapSeconds, gap > 0.5 {
+            parts.append("漏录 " + RecordingService.durationText(gap))
+        }
         if !m.segments.isEmpty { parts.append("\(m.segments.count) 段") }
         if !m.transcript.isEmpty { parts.append("\(m.transcript.count) 字") }
         if !m.summaryJSON.isEmpty { parts.append("有纪要") }

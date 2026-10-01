@@ -125,7 +125,16 @@ enum TranscriptionService {
                 if result.isFinal {
                     settled = true
                     let text = result.bestTranscription.formattedString
-                    AppLog.info("ASR", "\(url.lastPathComponent) 完成，\(text.count) 字")
+                    if text.isEmpty {
+                        // 0 字要能事后判断原因：64kbps 单声道下 1 秒约 8KB，
+                        // 一个 60 秒的段只有几十 KB，就说明那一段本来就没有声音，
+                        // 不是识别出了问题。体积带上，日志里才看得出来。
+                        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+                        let bytes = (attrs?[.size] as? Int) ?? 0
+                        AppLog.warn("ASR", "\(url.lastPathComponent) 完成，0 字（文件 \(bytes) 字节）")
+                    } else {
+                        AppLog.info("ASR", "\(url.lastPathComponent) 完成，\(text.count) 字")
+                    }
                     cont.resume(returning: text)
                 }
             }
