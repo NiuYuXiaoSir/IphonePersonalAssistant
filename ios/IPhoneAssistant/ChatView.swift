@@ -46,7 +46,7 @@ struct ChatView: View {
     private let examples = [
         "10 分钟后提醒我给供应商打个电话",
         "明天下午三点跟老王过一下方案，提前半小时提醒我",
-        "这周五之前把报价单发给采购"
+        "我今天做了什么？明天要做什么？"
     ]
 
     var body: some View {
@@ -132,7 +132,7 @@ struct ChatView: View {
                     .font(.system(size: 28, weight: .bold))
                     .multilineTextAlignment(.center)
 
-                Text("说一句就把待办、日程、备忘、提醒建出来，\n核对一下直接进提醒事项和日历。")
+                Text("说一句就把待办、日程、备忘、提醒建出来，\n核对一下直接进提醒事项和日历。\n它记得你说过的事——做了什么、要做什么都记着。")
                     .font(.system(size: 15))
                     .foregroundStyle(YBColor.textSecondary)
                     .multilineTextAlignment(.center)
@@ -296,6 +296,24 @@ struct ChatView: View {
             if let items = entry.items, !items.isEmpty {
                 ItemsCard(items: itemsBinding(entry.id), busy: entry.busy) {
                     write(entry.id)
+                }
+            }
+
+            if !entry.remembered.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(entry.remembered, id: \.self) { line in
+                        HStack(alignment: .top, spacing: 5) {
+                            Image(systemName: "brain")
+                                .font(.system(size: 10))
+                                .foregroundStyle(YBColor.textTertiary)
+                                .padding(.top, 2)
+                            Text(line)
+                                .font(.system(size: 12))
+                                .foregroundStyle(YBColor.textTertiary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
 
@@ -614,21 +632,31 @@ struct ChatView: View {
         let thinking = ChatEntry(role: .assistant, text: "", state: .thinking)
         chats.append(thinking, to: threadID)
         let history = chats.historyText(threadID: threadID)
+        // 记忆库给的相关上下文：长期记忆 + 最近几天的流水。
+        // 「昨天说的那事」「明天要做什么」能接上，全靠它和上面的对话历史。
+        let memory = MemoryStore.shared.digest(for: text)
 
         Task {
             do {
-                let items = try await AIStructurer.parse(text: text,
-                                                         images: dataURLs,
-                                                         history: history,
-                                                         config: config)
-                await MainActor.run { apply(items, to: thinking.id, error: nil) }
+                let result = try await AIStructurer.parse(text: text,
+                                                          images: dataURLs,
+                                                          history: history,
+                                                          memory: memory,
+                                                          config: config)
+                await MainActor.run { apply(result, to: thinking.id, error: nil) }
             } catch {
-                await MainActor.run { apply([], to: thinking.id, error: error.localizedDescription) }
+                await MainActor.run { apply(AIResult(), to: thinking.id, error: error.localizedDescription) }
             }
         }
     }
 
-    private func apply(_ items: [ParsedItem], to id: String, error: String?) {
+    private func apply(_ result: AIResult, to id: String, error: String?) {
+        // 模型说要记住的东西在这里落库；它和条目无关，失败了也不该影响这一轮对话
+        var remembered = (facts: 0, logs: 0)
+        if error == nil {
+            remembered = MemoryStore.shared.remember(result.memories, source: threadID)
+        }
+
         updateEntry(id) { entry in
             if let error {
                 entry.state = .failed
@@ -636,15 +664,22 @@ struct ChatView: View {
                 return
             }
             entry.state = .ok
-            if items.isEmpty {
+            entry.items = result.items
+            entry.remembered = result.memories.prefix(3).map { $0.content }
+            if !result.reply.isEmpty {
+                // 模型自己的话优先：问「我今天做了什么」时要的就是这句回答
+                entry.text = result.reply
+            } else if result.items.isEmpty {
                 entry.text = """
                 这段里没有找到可以执行的事。\
                 如果是想让我记下一件事，可以说得更具体一点，比如「明天下午三点跟老王过方案」。
                 """
             } else {
-                entry.text = "整理出 \(items.count) 条，核对一下，没问题就写进系统。"
-                entry.items = items
+                entry.text = "整理出 \(result.items.count) 条，核对一下，没问题就写进系统。"
             }
+        }
+        if remembered.facts + remembered.logs > 0 {
+            AppLog.info("Chat", "记忆已更新：长期 \(remembered.facts) 条、流水 \(remembered.logs) 条")
         }
         // 模型刚回来的东西立刻落盘，别等那 0.8 秒的合并窗口
         chats.saveNow()

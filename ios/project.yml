@@ -19,6 +19,12 @@ targets:
     type: application
     platform: iOS
 
+    dependencies:
+      # 系统自带的 SQLite：对话消息、长期记忆、每日流水都存在 Documents/assistant.sqlite3
+      # embed: false —— 它是系统的库，打进 App 包里没有意义
+      - sdk: libsqlite3.tbd
+        embed: false
+
     sources:
       - path: IPhoneAssistant
         # Info.plist 由 XcodeGen 依据下面的 info 段生成，必须排除，
@@ -30,8 +36,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.niuyuxiaosir.iphoneassistant.probe
         PRODUCT_NAME: IPhoneAssistant
-        MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         # 图标来自 Assets.xcassets/AppIcon.appiconset（由 tools/make-appicon.ps1 生成）

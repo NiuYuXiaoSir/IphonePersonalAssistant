@@ -386,6 +386,14 @@ struct AssistantView: View {
                     self.title = ""
                     self.notes = ""
                     AppLog.info("QuickAdd", done)
+                    // 手记的东西也进每日流水：不然「明天要做什么」只算对话里说过的那些。
+                    // 时间取条目上的日期，没设时间的算今天。
+                    let day = Self.dayString(from: dueString)
+                    let logKind: MemoryKind = itemKind == .note ? .note : .plan
+                    MemoryStore.shared.logManual(kind: logKind,
+                                                 content: Self.logContent(title: trimmed, kind: itemKind, notes: body),
+                                                 day: day,
+                                                 source: "quickadd")
                 }
                 if itemKind == .notification { await refreshNotices() }
             } catch {
@@ -427,6 +435,21 @@ struct AssistantView: View {
         let hours = minutes / 60
         let rest = minutes % 60
         return rest == 0 ? "\(hours) 小时" : "\(hours) 小时 \(rest) 分"
+    }
+
+    /// 条目日期（yyyy-MM-dd HH:mm 或空）→ 这一条算在哪天的流水里
+    private static func dayString(from dueString: String) -> String? {
+        let trimmed = dueString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let date = SystemWriter.date(from: trimmed, defaultHour: 9) else { return nil }
+        return MemoryStore.dayString(date)
+    }
+
+    /// 流水里那句要写得能脱离上下文看懂，所以带上类型前缀和备注
+    private static func logContent(title: String, kind: ParsedItem.Kind, notes: String) -> String {
+        var text = "\(kind.label)：\(title)"
+        let extra = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !extra.isEmpty { text += "（\(extra)）" }
+        return text
     }
 
     /// 默认时间取下一个整点，比「现在」更像人挑的时间。

@@ -92,28 +92,42 @@ struct ParsedItem: Identifiable, Codable {
     }
 }
 
-/// 把中文自然语言（可带图）拆成结构化条目。
+/// 模型一轮对话的完整产物：一句人话回复、要建的条目、要记住的东西。
+struct AIResult {
+    var reply: String = ""
+    var items: [ParsedItem] = []
+    var memories: [MemoryDraft] = []
+}
+
+/// 把中文自然语言（可带图）拆成结构化条目，同时给出一句回复、把值得记的写进记忆库。
 /// 这是整个 App 里最需要反复调的部分，所以 prompt 写成常量集中放，方便单独改。
 enum AIStructurer {
 
     /// 抽取用的系统提示词。改这里就能调整抽取行为，不用碰界面代码。
     static let systemPrompt = """
-    你是一个中文工作助理的信息抽取引擎。用户会给你一句话、一段文字（可能是会议记录、口头交办、聊天记录），也可能带一张图片。你要把它拆成可执行条目。
+    你是一个中文私人助理，同时负责从用户的话里抽取可执行条目。用户会交待要做的事、说刚做完的事、发照片、问问题。每一轮你都要做完三件事，然后只输出一个 JSON，不要解释，不要 markdown 代码块，不要前后缀文字：
 
-    只输出 JSON，不要任何解释，不要 markdown 代码块，不要前后缀文字。格式：
     {
-      "items": [
-        {
-          "kind": "todo 或 event 或 note 或 notification",
-          "title": "条目标题，不超过 30 字",
-          "notes": "补充说明，没有就空字符串",
-          "due_date": "yyyy-MM-dd HH:mm 或 yyyy-MM-dd，没有就空字符串",
-          "due_in_minutes": 如果用户说的是相对当前时刻的时间（“10分钟后”“半小时后”“两小时后”），这里填相对分钟数；否则填 -1,
-          "duration_minutes": 事件的时长分钟数，不是事件就填 0,
-          "priority": "high 或 normal 或 low",
-          "remind_before_minutes": 用户明确说了提前多久提醒就填分钟数（“提前半小时提醒我”填 30），没提就填 0
-        }
-      ]
+      "reply": "对用户说的一句自然的话",
+      "items": [ ...可执行条目... ],
+      "remember": [ ...值得记住的东西... ]
+    }
+
+    【reply】像人一样回话，1~3 句。
+    - 用户问「我今天做了什么」「明天要做什么」「上周那事怎么样了」时，只看【长期记忆】【最近几天】【这一段对话】：有记录就照着答，没有就说没记到，绝不编造。问的是某段时间，就把那几天里「做了」「计划」的条目归拢着答。
+    - 用户交待或陈述事情时，一句话确认即可，也可以说说你的判断（比如建议什么时候提醒更合适）。
+    - 不要在这里罗列条目（条目会以卡片显示），不要用「已为您」这种客服腔。
+
+    【items】把话里可执行的事拆成条目，格式：
+    {
+      "kind": "todo 或 event 或 note 或 notification",
+      "title": "条目标题，不超过 30 字",
+      "notes": "补充说明，没有就空字符串",
+      "due_date": "yyyy-MM-dd HH:mm 或 yyyy-MM-dd，没有就空字符串",
+      "due_in_minutes": 如果用户说的是相对当前时刻的时间（“10分钟后”“半小时后”“两小时后”），这里填相对分钟数；否则填 -1,
+      "duration_minutes": 事件的时长分钟数，不是事件就填 0,
+      "priority": "high 或 normal 或 low",
+      "remind_before_minutes": 用户明确说了提前多久提醒就填分钟数（“提前半小时提醒我”填 30），没提就填 0
     }
 
     规则：
@@ -129,39 +143,63 @@ enum AIStructurer {
     4. 一句话里包含多件事就拆成多条；同一件事不要拆开。
     5. title 要写成动作句（如“把方案改完发给老王”），不要只写名词。
     6. 绝不编造原文里没有的时间、人名、优先级。不确定就把对应字段留空。时间一律基于【现在】推算，不要凭空给一个时刻。
-    7. 如果整段内容里没有任何可执行的事，返回 {"items": []}。
+    7. 如果整段内容里没有任何可执行的事，返回 "items": []。
     8. 如果带了图片，先把图里的内容读出来（可能是白板照片、纸质笔记、聊天截图、名片、手写便签），把其中提到的待办、时间、人名一并抽取。用户只发一张图、没配文字时，图里的内容就是全部输入，不要因为用户没打字就返回空数组：图里哪怕只有一句“明天交周报”，也要抽成一条待办。图里的字看不清就不要猜，宁可不抽。
-    9. 如果用户是在改上一条结果（比如“第二条改成周五下午”“不要第一条了”），要结合【最近的对话】里已经列出的条目，把改完之后的完整清单重新输出一遍，不要只输出改动的那一条，也不要漏掉没被改动的条目。
+    9. 如果用户是在改上一条结果（比如“第二条改成周五下午”“不要第一条了”），要结合【这一段对话】里已经列出的条目，把改完之后的完整清单重新输出一遍，不要只输出改动的那一条，也不要漏掉没被改动的条目。
+
+    【remember】把以后还用得上的信息记下来。这是以后回答「我这一天做了什么」「明天要做什么」的唯一依据，所以用户说的事都要落进来。kind 只有这几种：
+       - done：用户刚做完 / 今天做了什么（“上午去看了桥杆”“跟老王通了电话”）
+       - plan：打算做、计划要做的事（“明天要去厂里”“下周把方案给老王”），day 填那一天
+       - note：值得记下的信息、别人的话、数字
+       - fact：关于用户本人的稳定事实（公司、岗位、住址、习惯）
+       - preference：偏好与要求（“别提前提醒我”“我一般十点睡”）
+       - person：人物及其关系（“老王是桥杆供应商”）
+       - project：在做的项目与进展（“16吨ABS工装，当前在等模具”）
+    每条格式：
+    {
+      "kind": "done 或 plan 或 note 或 fact 或 preference 或 person 或 project",
+      "content": "一句完整的话，脱离上下文也能看懂",
+      "day": "yyyy-MM-dd，只有 done/plan/note 需要，其他留空"
+    }
+    规则：
+    - 只记以后还用得上的。寒暄、语气词、已经记过的内容不要重复记。
+    - content 不要用代词，不要写「那个改到周五了」，要写「报价单改成周五发给采购」。
+    - 用户只是问问题（比如“我今天做了什么”）时，remember 返回空数组。
     """
 
-    /// 调一次模型，把 text（可附图）拆成条目。
-    /// history 是最近的对话摘要，用来让“第二条改成周五”这类追问能接上上文。
+    /// 调一次模型：回复 + 条目 + 记忆。
+    /// history 是这一段对话最近的往来，memory 是记忆库给的相关上下文（长期记忆 + 最近几天的流水），
+    /// 两者一起决定「接着上次聊」能不能接上。
     static func parse(text: String,
                       images: [String] = [],
                       history: String = "",
-                      config: LLMConfig) async throws -> [ParsedItem] {
+                      memory: String = "",
+                      config: LLMConfig) async throws -> AIResult {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var sections = ["现在是 \(nowDescription())。"]
-        if !history.isEmpty {
-            sections.append("【最近的对话】\n\(history)")
+        if !memory.isEmpty {
+            sections.append(memory)
         }
-        sections.append("需要抽取的内容：\n\(body.isEmpty ? "（内容见附图）" : body)")
+        if !history.isEmpty {
+            sections.append("【这一段对话】\n\(history)")
+        }
+        sections.append("用户这次说的：\n\(body.isEmpty ? "（内容见附图）" : body)")
         let user = sections.joined(separator: "\n\n")
 
-        AppLog.info("AI", "开始解析，输入 \(body.count) 字，附图 \(images.count) 张")
+        AppLog.info("AI", "开始解析，输入 \(body.count) 字，附图 \(images.count) 张，记忆上下文 \(memory.count) 字")
         let client = OpenAICompatibleClient(config: config)
         var userMessage = ChatMessage.user(user)
         userMessage.images = images
         let raw = try await client.chat([.system(systemPrompt), userMessage], jsonMode: true)
         AppLog.info("AI", "模型返回 \(raw.count) 字")
 
-        let items = try decode(raw)
-        AppLog.info("AI", "解析出 \(items.count) 条")
-        if items.isEmpty {
+        let result = try decode(raw)
+        AppLog.info("AI", "解析出条目 \(result.items.count) 条、记忆 \(result.memories.count) 条")
+        if result.items.isEmpty && result.memories.isEmpty {
             // 抽不出东西时必须把原文记下来，否则无法判断是模型没抽还是内容确实没有
-            AppLog.warn("AI", "未抽出条目，模型原文：\(raw.prefix(600))")
+            AppLog.warn("AI", "条目和记忆都为空，模型原文：\(raw.prefix(600))")
         }
-        return items
+        return result
     }
 
     /// 给模型的“现在”。
@@ -194,15 +232,26 @@ enum AIStructurer {
 
     /// 手解 JSON 而不是用 Codable：
     /// 各家网关的返回字段经常有增减，手解能容忍缺字段，报错也能直接带出原文。
-    static func decode(_ raw: String) throws -> [ParsedItem] {
+    ///
+    /// 也兼容老格式（只有 items、没有 reply/remember）：换了模型或回退版本时，
+    /// 至少条目还能抽出来，不会整轮对话失败。
+    static func decode(_ raw: String) throws -> AIResult {
         let cleaned = stripCodeFence(raw)
         guard let obj = jsonObject(from: cleaned) else {
             AppLog.error("AI", "返回的不是 JSON：\(cleaned.prefix(400))")
             throw LLMError.decoding("模型没有返回合法 JSON，原文：\(cleaned.prefix(200))")
         }
 
-        guard let rawItems = obj["items"] as? [[String: Any]] else {
-            AppLog.warn("AI", "响应里没有 items 数组：\(cleaned.prefix(400))")
+        var result = AIResult()
+        result.reply = ((obj["reply"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        result.items = decodeItems(obj["items"], raw: cleaned)
+        result.memories = decodeMemories(obj["remember"])
+        return result
+    }
+
+    private static func decodeItems(_ value: Any?, raw: String) -> [ParsedItem] {
+        guard let rawItems = value as? [[String: Any]] else {
+            AppLog.warn("AI", "响应里没有 items 数组：\(raw.prefix(400))")
             return []
         }
 
@@ -244,6 +293,21 @@ enum AIStructurer {
             AppLog.info("AI", "条目 \(item.kind.rawValue)「\(item.title)」时间=\(item.dueDate.isEmpty ? "无" : item.dueDate) 提前提醒=\(item.remindBeforeMinutes)分")
         }
         return items
+    }
+
+    private static func decodeMemories(_ value: Any?) -> [MemoryDraft] {
+        guard let list = value as? [[String: Any]] else { return [] }
+        let drafts: [MemoryDraft] = list.compactMap { dict in
+            let content = ((dict["content"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard content.count >= 2 else { return nil }
+            let kind = ((dict["kind"] as? String) ?? "fact").lowercased()
+            let day = ((dict["day"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return MemoryDraft(kind: kind, content: content, day: day)
+        }
+        for draft in drafts {
+            AppLog.info("AI", "记忆 \(draft.kind)「\(draft.content)」日期=\(draft.day.isEmpty ? "无" : draft.day)")
+        }
+        return drafts
     }
 
     /// 从模型返回里挖出那个 JSON 对象。

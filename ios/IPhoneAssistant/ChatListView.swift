@@ -38,8 +38,16 @@ struct ChatListView: View {
             .navigationDestination(for: FolderRoute.self) { route in
                 ChatFolderView(path: $path, folderID: route.folderID)
             }
+            .navigationDestination(for: MemoryRoute.self) { _ in
+                MemoryView()
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        path.append(MemoryRoute())
+                    } label: {
+                        Image(systemName: "brain")
+                    }
                     Button {
                         if showingSearch {
                             cancelSearch()
@@ -206,7 +214,7 @@ struct ChatListView: View {
             .padding(.top, 4)
             .ybRow()
 
-            YBHint(text: "说一句话就把待办、日程、备忘、提醒建出来，不用自己填表。")
+            YBHint(text: "说一句话就把待办、日程、备忘、提醒建出来，不用自己填表。右上角的脑子图标里能看到它记住了什么。")
                 .ybRow(horizontal: 0)
         }
 
