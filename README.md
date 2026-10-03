@@ -75,7 +75,11 @@ certutil -hashfile IPhoneAssistant-unsigned.ipa SHA256
 
 列表里的「分组 / 今天 / 昨天 / 本月 / 更早」是**冻结行**：滚动时钉在屏幕顶上不动，下面过去的行从它后面穿过——和表格冻结首行一个意思（用 `.plain` 的 List 加 Section header 做的，见 `YBPinnedHeader`）。
 
-界面整套按元宝的样子做：纯黑底 + 深灰卡片、主操作是卡片正中一个蓝图标加蓝字、分组是一张卡里若干行（首尾各自收圆角）、文档类页面反过来用暖米色的纸。所有颜色、字号、组件都收在 `ios/IPhoneAssistant/YuanbaoStyle.swift` 一个文件里，改一处全app跟着变；深浅色各有一套值，切到浅色模式不会变成白字压白底。
+界面现在是照元宝的样子做的：纯黑底 + 深灰卡片、主操作是卡片正中一个蓝图标加蓝字、分组是一张卡里若干行（首尾各自收圆角）、文档类页面反过来用暖米色的纸。所有颜色、字号、组件都收在 `ios/IPhoneAssistant/YuanbaoStyle.swift` 一个文件里，改一处全app跟着变；深浅色各有一套值，切到浅色模式不会变成白字压白底。
+
+**这套皮肤要整套换掉**（2026-10-03 定）：不再抄元宝，改用 iOS 系统原生外观 + 一个品牌蓝——系统语义色、系统文本样式、系统组件（List insetGrouped / Form / .searchable / .bordered 按钮 / ContentUnavailableView），自绘的卡片、纸面、按钮删掉。理由是自绘的那几处正好是 HIG 要的 Dynamic Type、VoiceOver、对比度、Liquid Glass 全都要自己补的地方，而一处都没补。规格见 [`UI-PRD.md`](UI-PRD.md) 的 §5、§6；换肤按屏推进，过渡期会出现两种外观混着的状态。
+
+界面下一轮重做的规格（现状诊断、信息架构、设计系统、逐屏规格、分期）写在 [`UI-PRD.md`](UI-PRD.md) 里，改动前先看它。
 
 关于时间：发给模型的上下文里带的是**当前时刻**（含时区和星期），不是只有日期。像「10 分钟后提醒我」这种相对表达，除了让模型换算，客户端还会按本地时间再算一遍绝对时间覆盖掉模型给的值——模型的日期算术错得很有规律，而错的往往正是最要紧的那条。提醒默认到点弹通知，只有明说「提前半小时提醒我」才会提前。
 
@@ -93,6 +97,7 @@ certutil -hashfile IPhoneAssistant-unsigned.ipa SHA256
 ## 目录结构
 
 ```
+UI-PRD.md                         界面重做的 PRD（诊断 / 信息架构 / 逐屏规格 / 分期）
 .github/workflows/build-ipa.yml   云构建流水线（含编译错误回传）
 ci/build-error.log                编译失败时自动写入的诊断信息
 tools/make-appicon.ps1            在 Windows 上生成 App 图标（产物已入库）
@@ -101,7 +106,7 @@ ios/IPhoneAssistant/
   App.swift / RootView.swift      入口与五个页签
   AppRouter.swift                 快捷菜单的接管与页签跳转
   AppLog.swift                    结构化日志（无 Mac 开发的基础设施）
-  YuanbaoStyle.swift              界面语汇的唯一出处（色板 / 字号 / 卡片 / 行 / 标签页 / 波形）
+  YuanbaoStyle.swift              现有的界面语汇（色板 / 字号 / 卡片 / 行 / 标签页 / 波形）——按 UI-PRD §6 逐步删除，改成系统原生组件
   Assets.xcassets                 图标与主题蓝
 
   LLMProvider.swift               供应商预设
