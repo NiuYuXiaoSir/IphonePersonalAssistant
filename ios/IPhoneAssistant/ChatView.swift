@@ -105,8 +105,8 @@ struct ChatView: View {
             Text("这段对话的消息和图片都会被删掉，会话本身留着。已经写进提醒事项、日历、备忘的东西不受影响。")
         }
         .toast($toast)
-        .sensoryFeedback(.success, trigger: hapticSuccess) { settings.hapticsEnabled }
-        .sensoryFeedback(.warning, trigger: hapticWarning) { settings.hapticsEnabled }
+        .sensoryFeedback(.success, trigger: hapticSuccess) { _, _ in settings.hapticsEnabled }
+        .sensoryFeedback(.warning, trigger: hapticWarning) { _, _ in settings.hapticsEnabled }
     }
 
     // MARK: - 会话读写

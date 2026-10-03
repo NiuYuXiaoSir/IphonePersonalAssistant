@@ -21,11 +21,7 @@ struct ChatListView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            List {
-                newChatSection
-                if !chats.folders.isEmpty { folderSection }
-                threadSections
-            }
+            listContent
             .navigationTitle("对话")
             .searchable(text: $query,
                         placement: .navigationBarDrawer(displayMode: .always),
@@ -107,7 +103,17 @@ struct ChatListView: View {
                    duration: 4,
                    onExpire: { chats.commitDetachThread() },
                    action: { chats.undoDetachThread() })
-            .sensoryFeedback(.warning, trigger: chats.recentlyDetachedThread?.id) { settings.hapticsEnabled }
+            .sensoryFeedback(.warning, trigger: chats.recentlyDetachedThread?.id) { _, _ in settings.hapticsEnabled }
+        }
+    }
+
+    /// 列表内容单独拎出来：body 里那一大坨表达式会让编译器算不动
+    @ViewBuilder
+    private var listContent: some View {
+        List {
+            newChatSection
+            if !chats.folders.isEmpty { folderSection }
+            threadSections
         }
     }
 

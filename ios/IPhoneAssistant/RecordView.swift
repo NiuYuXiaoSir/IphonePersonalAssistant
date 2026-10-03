@@ -55,9 +55,9 @@ struct RecordView: View {
             }
             .onAppear(perform: onAppearAction)
             // 触觉：开始、打标记、存好各一次；录音中只有最轻的那一档
-            .sensoryFeedback(.impact(weight: .medium), trigger: hapticStart) { settings.hapticsEnabled }
-            .sensoryFeedback(.impact(weight: .light), trigger: recorder.markerCount) { settings.hapticsEnabled }
-            .sensoryFeedback(.success, trigger: hapticSaved) { settings.hapticsEnabled }
+            .sensoryFeedback(.impact(weight: .medium), trigger: hapticStart) { _, _ in settings.hapticsEnabled }
+            .sensoryFeedback(.impact(weight: .light), trigger: recorder.markerCount) { _, _ in settings.hapticsEnabled }
+            .sensoryFeedback(.success, trigger: hapticSaved) { _, _ in settings.hapticsEnabled }
         }
     }
 

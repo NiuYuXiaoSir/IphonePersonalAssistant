@@ -29,17 +29,7 @@ struct MeetingsView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            List {
-                if !searching { recordSection }
-                if searching {
-                    searchSection
-                } else if mode == .timeline {
-                    timelineSections
-                } else {
-                    archiveSection
-                }
-                infoSection
-            }
+            listContent
             .navigationTitle("会议")
             // 搜索历史走系统的搜索建议：点一下直接填进搜索框
             .searchable(text: $query,
@@ -93,7 +83,24 @@ struct MeetingsView: View {
                    duration: 4,
                    onExpire: { store.commitDetach() },
                    action: { store.undoDetach() })
-            .sensoryFeedback(.warning, trigger: store.recentlyDetached?.id) { settings.hapticsEnabled }
+            .sensoryFeedback(.warning, trigger: store.recentlyDetached?.id) { _, _ in settings.hapticsEnabled }
+        }
+    }
+
+    /// 列表内容单独拎出来：body 里那一大坨表达式会让编译器算不动
+    /// （报错原文：unable to type-check this expression in reasonable time）
+    @ViewBuilder
+    private var listContent: some View {
+        List {
+            if !searching { recordSection }
+            if searching {
+                searchSection
+            } else if mode == .timeline {
+                timelineSections
+            } else {
+                archiveSection
+            }
+            infoSection
         }
     }
 
