@@ -21,6 +21,8 @@ struct ChatView: View {
 
     /// 看的是哪一段对话
     let threadID: String
+    /// 从「＋ → 拍照」进来时，相机直接打开
+    var openCameraOnAppear: Bool = false
 
     @StateObject private var liveASR = LiveSpeechRecognizer()
 
@@ -81,7 +83,10 @@ struct ChatView: View {
                       maxSelectionCount: 4,
                       matching: .images)
         .onChange(of: libraryItems) { _, items in loadLibrary(items) }
-        .onAppear { balance.refreshIfStale(settings: settings) }
+        .onAppear {
+            balance.refreshIfStale(settings: settings)
+            if openCameraOnAppear { openCamera() }
+        }
         .onChange(of: liveASR.liveText) { _, text in
             if liveASR.isRunning { draft = voicePrefix + text }
         }

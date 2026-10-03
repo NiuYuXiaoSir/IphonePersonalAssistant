@@ -57,6 +57,13 @@ struct ChatListView: View {
                     .accessibilityLabel("记忆：助理记住了什么")
 
                     Button {
+                        router.showQuickAdd = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("记一条")
+
+                    Button {
                         showNewFolder = true
                     } label: {
                         Image(systemName: "folder.badge.plus")

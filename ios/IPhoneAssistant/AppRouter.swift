@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// 长按图标弹出的快捷菜单项。
 /// rawValue 必须和 project.yml 里 UIApplicationShortcutItemType 写的一模一样，
@@ -19,15 +18,29 @@ final class AppRouter: ObservableObject {
 
     static let shared = AppRouter()
 
-    enum Tab: Int, Hashable {
-        case meetings, chat, quickAdd, settings, diagnostics
+    /// 四个页签。用的字符串而不是序号——序号在这份数据里会变，
+    /// 存到 UserDefaults 里的旧序号会指到别的页签上。
+    enum Tab: String, Hashable, CaseIterable {
+        case today, meetings, chat, settings
     }
 
-    @Published var selectedTab: Tab = .meetings
+    private static let tabKey = "router.selectedTab"
+
+    /// 页签切换。改动会记住，下次启动回到这一页
+    /// （HIG 的 Launching 页：Avoid making people retrace steps）。
+    @Published var selectedTab: Tab {
+        didSet { UserDefaults.standard.set(selectedTab.rawValue, forKey: Self.tabKey) }
+    }
+
     /// 还没被目标页面取走的意图
     @Published var pending: AppShortcut?
+    /// 「＋」速记面板。任何页签都能把它叫起来，所以放在这里而不是某个页面里。
+    @Published var showQuickAdd = false
 
-    private init() {}
+    private init() {
+        let saved = UserDefaults.standard.string(forKey: Self.tabKey)
+        selectedTab = saved.flatMap(Tab.init(rawValue:)) ?? .today
+    }
 
     func handle(_ shortcut: AppShortcut) {
         switch shortcut {
@@ -38,8 +51,8 @@ final class AppRouter: ObservableObject {
             selectedTab = .chat
             pending = .newChat
         case .quickAdd:
-            // 速记页本身就是要看的东西，切过去就完事
-            selectedTab = .quickAdd
+            // 面板本身就是要看的东西，直接拉起来
+            showQuickAdd = true
             pending = nil
         }
     }

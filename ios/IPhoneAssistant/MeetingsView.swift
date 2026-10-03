@@ -54,7 +54,14 @@ struct MeetingsView: View {
             }
             .onSubmit(of: .search) { history.add(query) }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        router.showQuickAdd = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("记一条")
+
                     Menu {
                         Picker("视图", selection: $mode) {
                             ForEach(ViewMode.allCases) { item in

@@ -18,6 +18,7 @@ struct SettingsView: View {
                 credentialSection
                 testSection
                 systemSection
+                advancedSection
             }
             // 这一页有三个输入框（地址、模型名、密钥），往下滑一下收掉，
             // 右上角也给一个明确的按钮
@@ -217,6 +218,22 @@ struct SettingsView: View {
             Text("权限")
         } footer: {
             Text("麦克风、语音识别、相机、日历、提醒事项、通知的开关都在系统设置里。这些权限都是用到的时候才申请，拒绝了也能随时在这里改回来。")
+        }
+    }
+    // MARK: - 高级
+
+    /// 诊断原本占一个页签，那是拿开发者的便利换日常的眼球——收进这里，功能一个不少。
+    private var advancedSection: some View {
+        Section {
+            NavigationLink {
+                DiagnosticsView()
+            } label: {
+                Label("诊断与日志", systemImage: "stethoscope")
+            }
+        } header: {
+            Text("高级")
+        } footer: {
+            Text("探针、权限与签名信息、运行日志、数据占用。装机链路出问题时先看这里——免费签名 7 天要重装一次，装机相关的现象都在这一页验证。")
         }
     }
 }

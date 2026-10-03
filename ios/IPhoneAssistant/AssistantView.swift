@@ -10,6 +10,9 @@ import UIKit
 /// 版式用系统 Form：分段选择、开关、日期选择、行、页脚说明都是系统给的。
 struct AssistantView: View {
 
+    /// 从「＋」面板选「语音速记」进来时，话筒直接开着
+    var autoStartVoice: Bool = false
+
     @ObservedObject private var noteStore = NoteStore.shared
     @StateObject private var liveASR = LiveSpeechRecognizer()
 
@@ -32,40 +35,41 @@ struct AssistantView: View {
     private let durationOptions = [15, 30, 45, 60, 90, 120, 180]
 
     var body: some View {
-        NavigationStack {
-            Form {
-                kindSection
-                contentSection
-                if kind == .todo { todoTimeSection }
-                if kind == .event { eventTimeSection }
-                if kind == .notification { noticeTimeSection }
-                notesFieldSection
-                saveSection
-                if hasPendingNotices { pendingNoticeSection }
-                if hasNotes { savedNotesSection }
-            }
-            .scrollDismissesKeyboard(.immediately)
-            .navigationTitle("速记")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("收起键盘") { hideKeyboard() }
-                }
-            }
-            .onChange(of: kind) { _, newKind in
-                if newKind == .event {
-                    hasDueDate = true
-                    dueDate = Self.nextRoundHour()
-                }
-            }
-            .onChange(of: liveASR.liveText) { _, text in
-                if liveASR.isRunning { title = voicePrefix + text }
-            }
-            .onDisappear { if liveASR.isRunning { liveASR.stop() } }
-            .onAppear { Task { await refreshNotices() } }
-            .toast($toast)
+        Form {
+            kindSection
+            contentSection
+            if kind == .todo { todoTimeSection }
+            if kind == .event { eventTimeSection }
+            if kind == .notification { noticeTimeSection }
+            notesFieldSection
+            saveSection
+            if hasPendingNotices { pendingNoticeSection }
+            if hasNotes { savedNotesSection }
         }
+        .scrollDismissesKeyboard(.immediately)
+        .navigationTitle("速记")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("收起键盘") { hideKeyboard() }
+            }
+        }
+        .onChange(of: kind) { _, newKind in
+            if newKind == .event {
+                hasDueDate = true
+                dueDate = Self.nextRoundHour()
+            }
+        }
+        .onChange(of: liveASR.liveText) { _, text in
+            if liveASR.isRunning { title = voicePrefix + text }
+        }
+        .onDisappear { if liveASR.isRunning { liveASR.stop() } }
+        .onAppear {
+            Task { await refreshNotices() }
+            if autoStartVoice && !liveASR.isRunning { toggleVoice() }
+        }
+        .toast($toast)
     }
 
     // MARK: - 表单
