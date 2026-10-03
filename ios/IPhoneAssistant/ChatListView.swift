@@ -8,7 +8,7 @@ import SwiftUI
 struct ChatListView: View {
     @EnvironmentObject private var chats: ChatStore
     @ObservedObject private var router = AppRouter.shared
-    @ObservedObject private var history = YBSearchHistory.chats
+    @ObservedObject private var history = SearchHistory.chats
 
     @State private var path = NavigationPath()
     @State private var query = ""

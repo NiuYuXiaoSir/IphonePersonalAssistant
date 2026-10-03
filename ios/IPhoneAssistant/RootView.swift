@@ -38,6 +38,9 @@ struct RootView: View {
         .sheet(isPresented: $router.showQuickAdd) {
             QuickAddSheet()
         }
+        .onChange(of: router.selectedTab) { _, _ in
+            router.rememberTab()
+        }
         .onChange(of: scenePhase) { _, phase in
             // 退到后台就把撤销窗口收掉：不然 App 在窗口里被杀掉，
             // 撤下的记录会和音频文件对不上（会议那边会被当成「意外中断」又找回来）

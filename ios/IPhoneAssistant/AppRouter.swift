@@ -26,11 +26,9 @@ final class AppRouter: ObservableObject {
 
     private static let tabKey = "router.selectedTab"
 
-    /// 页签切换。改动会记住，下次启动回到这一页
-    /// （HIG 的 Launching 页：Avoid making people retrace steps）。
-    @Published var selectedTab: Tab {
-        didSet { UserDefaults.standard.set(selectedTab.rawValue, forKey: Self.tabKey) }
-    }
+    /// 当前页签。切了之后由 RootView 调 `rememberTab()` 记下来，
+    /// 下次启动回到这一页（HIG 的 Launching 页：Avoid making people retrace steps）。
+    @Published var selectedTab: Tab = .today
 
     /// 还没被目标页面取走的意图
     @Published var pending: AppShortcut?
@@ -40,6 +38,11 @@ final class AppRouter: ObservableObject {
     private init() {
         let saved = UserDefaults.standard.string(forKey: Self.tabKey)
         selectedTab = saved.flatMap(Tab.init(rawValue:)) ?? .today
+    }
+
+    /// 记住当前页签
+    func rememberTab() {
+        UserDefaults.standard.set(selectedTab.rawValue, forKey: Self.tabKey)
     }
 
     func handle(_ shortcut: AppShortcut) {

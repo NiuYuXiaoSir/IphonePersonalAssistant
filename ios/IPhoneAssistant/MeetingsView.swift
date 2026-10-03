@@ -10,7 +10,7 @@ import SwiftUI
 struct MeetingsView: View {
     @EnvironmentObject private var store: MeetingStore
     @ObservedObject private var router = AppRouter.shared
-    @ObservedObject private var history = YBSearchHistory.meetings
+    @ObservedObject private var history = SearchHistory.meetings
 
     @State private var path: [String] = []
     @State private var showRecorder = false

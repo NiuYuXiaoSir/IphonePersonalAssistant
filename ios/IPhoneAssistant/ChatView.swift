@@ -93,7 +93,7 @@ struct ChatView: View {
         .onDisappear {
             if liveASR.isRunning { liveASR.stop() }
             sendTask?.cancel()
-            YBSpeech.stop()
+            SpeechPlayer.stop()
         }
         .confirmationDialog("清空这段对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
             Button("清空", role: .destructive) { chats.clearThread(id: threadID) }
@@ -424,7 +424,7 @@ struct ChatView: View {
             .accessibilityLabel("复制这条回复")
 
             Button {
-                YBSpeech.toggle(entry.text)
+                SpeechPlayer.toggle(entry.text)
             } label: {
                 Image(systemName: "speaker.wave.2")
             }
