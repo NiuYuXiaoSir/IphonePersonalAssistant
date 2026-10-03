@@ -43,9 +43,9 @@ extension SystemWriter {
 
 /// 会议纪要面板。
 ///
-/// 它是会议详情里那张「纸」上的内容之一，所以整块按文档排版：
+/// 它是会议详情里「纪要」那一页的内容，所以整块按文档排版：
 /// 摘要是一段话，后面按「议题 / 待办 / 日程 / 决议 / 要点 / 未决问题」一节节往下走，
-/// 不再是六张各带标题的卡片——那样看长文字很累，也不像一份纪要。
+/// 不是六张各带标题的卡片——看长文字，一段段读比一张张点舒服。
 ///
 /// 抬头（标题 + 时间 + 改名）由外面传进来，因为它要跟着会议标题一起变。
 struct MeetingSummaryPanel<Header: View>: View {
@@ -61,6 +61,7 @@ struct MeetingSummaryPanel<Header: View>: View {
     @State private var hasSummary = false
     @State private var busy = false
     @State private var status = ""
+    @State private var toast = ""
     @State private var loaded = false
 
     private var meeting: Meeting? { store.meeting(id: meetingID) }
@@ -89,13 +90,13 @@ struct MeetingSummaryPanel<Header: View>: View {
 
                     if !status.isEmpty {
                         Text(status)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(YBColor.paperInkSoft)
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)
-                            .background(YBColor.paperHi,
+                            .background(Color(uiColor: .secondarySystemBackground),
                                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
@@ -104,6 +105,7 @@ struct MeetingSummaryPanel<Header: View>: View {
             .padding(.bottom, 28)
         }
         .onAppear(perform: loadExisting)
+        .toast($toast)
     }
 
     // MARK: - 文档
@@ -116,8 +118,7 @@ struct MeetingSummaryPanel<Header: View>: View {
         if !summary.topics.isEmpty || !summary.actionItems.isEmpty || !summary.events.isEmpty
             || !summary.decisions.isEmpty || !summary.keyPoints.isEmpty || !summary.unresolved.isEmpty {
             Text("小结")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(YBColor.paperInk)
+                .font(.title3.bold())
                 .padding(.top, 2)
         }
 
@@ -131,34 +132,33 @@ struct MeetingSummaryPanel<Header: View>: View {
             bulletSection("要点", lines: summary.keyPoints)
         }
         if !summary.unresolved.isEmpty {
-            bulletSection("未决问题", lines: summary.unresolved, tint: YBColor.warning)
+            bulletSection("未决问题", lines: summary.unresolved, tint: .orange)
         }
     }
 
     private var titleSuggestion: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("标题建议")
-                .font(.system(size: 13))
-                .foregroundStyle(YBColor.paperInkSoft)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             Text(summary.titleDraft)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(YBColor.paperInk)
+                .font(.headline)
                 .fixedSize(horizontal: false, vertical: true)
             Button("用它作为会议标题") { applyTitle() }
-                .buttonStyle(YBPaperButtonStyle())
+                .buttonStyle(.bordered)
+                .controlSize(.small)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(YBColor.paperHi,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     /// 摘要和议题都按正文排版：不套卡片，靠字号和留白分层
     private func paragraph(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 15.5))
-            .foregroundStyle(YBColor.paperInk)
-            .lineSpacing(6)
+            .font(.body)
+            .lineSpacing(5)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -168,13 +168,11 @@ struct MeetingSummaryPanel<Header: View>: View {
             ForEach(summary.topics.indices, id: \.self) { index in
                 VStack(alignment: .leading, spacing: 5) {
                     Text("\(index + 1). \(summary.topics[index].topic)")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(YBColor.paperInk)
+                        .font(.headline)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(summary.topics[index].conclusion)
-                        .font(.system(size: 15.5))
-                        .foregroundStyle(YBColor.paperInk)
-                        .lineSpacing(5)
+                        .font(.body)
+                        .lineSpacing(4)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -182,21 +180,19 @@ struct MeetingSummaryPanel<Header: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func bulletSection(_ title: String, lines: [String], tint: Color = YBColor.paperInk) -> some View {
+    private func bulletSection(_ title: String, lines: [String], tint: Color = .primary) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(YBColor.paperInk)
+                .font(.headline)
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(lines.indices, id: \.self) { index in
                     HStack(alignment: .top, spacing: 8) {
                         Text("•")
-                            .font(.system(size: 15.5))
-                            .foregroundStyle(YBColor.paperInkSoft)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
                         Text(lines[index])
-                            .font(.system(size: 15.5))
+                            .font(.body)
                             .foregroundStyle(tint)
-                            .lineSpacing(4)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -208,8 +204,8 @@ struct MeetingSummaryPanel<Header: View>: View {
     private var actionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("待办", note: "\(summary.actionItems.filter { $0.include }.count)/\(summary.actionItems.count) 条会写进提醒事项")
-            ForEach($summary.actionItems) { $item in
-                reviewRow($item)
+            ForEach($summary.actionItems) { item in
+                reviewRow(item)
             }
         }
     }
@@ -217,8 +213,8 @@ struct MeetingSummaryPanel<Header: View>: View {
     private var eventSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("日程", note: "\(summary.events.filter { $0.include }.count)/\(summary.events.count) 条会写进日历")
-            ForEach($summary.events) { $item in
-                reviewRow($item)
+            ForEach($summary.events) { item in
+                reviewRow(item)
             }
         }
     }
@@ -226,11 +222,10 @@ struct MeetingSummaryPanel<Header: View>: View {
     private func sectionTitle(_ title: String, note: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(YBColor.paperInk)
+                .font(.headline)
             Text(note)
-                .font(.system(size: 12))
-                .foregroundStyle(YBColor.paperInkSoft)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -241,51 +236,49 @@ struct MeetingSummaryPanel<Header: View>: View {
                     item.wrappedValue.include.toggle()
                 } label: {
                     Image(systemName: item.wrappedValue.include ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 19))
-                        .foregroundStyle(item.wrappedValue.include ? YBColor.accent : YBColor.paperInkSoft)
+                        .font(.title3)
+                        .foregroundStyle(item.wrappedValue.include ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(item.wrappedValue.include ? "不写入这条" : "写入这条")
 
                 TextField("标题", text: item.title, axis: .vertical)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(YBColor.paperInk)
+                    .font(.body)
                     .lineLimit(1...3)
             }
 
             HStack(spacing: 8) {
                 Image(systemName: "clock")
-                    .font(.system(size: 11))
-                    .foregroundStyle(YBColor.paperInkSoft)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextField("时间（可留空）", text: item.dueDate)
-                    .font(.system(size: 13))
-                    .foregroundStyle(YBColor.paperInk)
+                    .font(.footnote)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 if item.wrappedValue.kind == .event {
                     TextField("分钟", value: item.durationMinutes, format: .number)
-                        .font(.system(size: 13))
-                        .foregroundStyle(YBColor.paperInk)
+                        .font(.footnote)
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
                         .frame(width: 42)
                     Text("分钟")
-                        .font(.system(size: 12))
-                        .foregroundStyle(YBColor.paperInkSoft)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.leading, 27)
 
             if !item.wrappedValue.notes.isEmpty {
                 Text(item.wrappedValue.notes)
-                    .font(.system(size: 12))
-                    .foregroundStyle(YBColor.paperInkSoft)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 27)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(YBColor.paperHi,
+        .background(Color(uiColor: .secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
@@ -293,20 +286,20 @@ struct MeetingSummaryPanel<Header: View>: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
                 Text("会议文字 \(m.transcript.count) 字")
-                    .font(.system(size: 13))
-                    .foregroundStyle(YBColor.paperInkSoft)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Text("模型 \(settings.model)")
-                    .font(.system(size: 13))
-                    .foregroundStyle(YBColor.paperInkSoft)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 if balance.supports(settings) {
                     Button {
                         balance.refresh(settings: settings)
                     } label: {
                         Text("余额 \(balance.chipText)")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(balance.isLow ? YBColor.danger : YBColor.paperInkSoft)
+                            .font(.footnote)
+                            .foregroundStyle(balance.isLow ? Color.orange : Color.secondary)
                     }
-                    .buttonStyle(YBPressStyle())
+                    .buttonStyle(.plain)
                 }
                 Spacer(minLength: 0)
             }
@@ -317,18 +310,18 @@ struct MeetingSummaryPanel<Header: View>: View {
                 Label(busy ? "生成中…（长会议可能要等半分钟）" : (hasSummary ? "重新生成纪要" : "生成 AI 纪要"),
                       systemImage: "sparkles")
             }
-            .buttonStyle(YBPaperPrimaryButtonStyle())
+            .buttonStyle(.borderedProminent)
             .disabled(busy)
 
             Text("会真的向模型发一次请求。每条待办都被要求附上原文句子，方便你核对是不是模型编的。")
-                .font(.system(size: 12))
-                .foregroundStyle(YBColor.paperInkSoft)
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(YBColor.paperHi,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var writeBlock: some View {
@@ -338,26 +331,26 @@ struct MeetingSummaryPanel<Header: View>: View {
             } label: {
                 Label(busy ? "写入中…" : "把勾选的条目写入系统", systemImage: "square.and.arrow.down")
             }
-            .buttonStyle(YBPaperPrimaryButtonStyle())
+            .buttonStyle(.borderedProminent)
             .disabled(busy)
 
             Button {
                 UIPasteboard.general.string = meeting?.summaryJSON ?? ""
-                status = "已复制纪要原文"
+                toast = "已复制纪要原文"
             } label: {
                 Label("复制纪要原文", systemImage: "doc.on.doc")
             }
-            .buttonStyle(YBPaperButtonStyle())
+            .buttonStyle(.bordered)
 
             Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。只有勾选的会被写入。")
-                .font(.system(size: 12))
-                .foregroundStyle(YBColor.paperInkSoft)
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(YBColor.paperHi,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func notice(_ text: String, icon: String) -> some View {
@@ -365,12 +358,12 @@ struct MeetingSummaryPanel<Header: View>: View {
             Image(systemName: icon)
             Text(text).fixedSize(horizontal: false, vertical: true)
         }
-        .font(.system(size: 14))
-        .foregroundStyle(YBColor.paperInkSoft)
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(YBColor.paperHi,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     // MARK: - 动作

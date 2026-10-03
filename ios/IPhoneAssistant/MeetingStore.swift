@@ -111,6 +111,51 @@ final class MeetingStore: ObservableObject {
     }
 
     func delete(_ meeting: Meeting) {
+        purge(meeting)
+    }
+
+    // MARK: - 删除与撤销
+    //
+    // 「撤下 → 撤销 → 真删」三段式：删除时先把记录从列表里摘掉、音频留着，
+    // 撤销窗口过了才真删文件。HIG 的 Alerts 页说得很清楚——
+    // 有了撤销就不该再弹确认框，那只是白打断一次。
+
+    /// 刚撤下、还在撤销窗口里的记录。界面用它显示「已删除 · 撤销」。
+    @Published private(set) var recentlyDetached: Meeting?
+
+    /// 从列表里撤下（音频先留着）
+    func detach(_ meeting: Meeting) {
+        // 上一笔还没撤销完就删下一笔：先把上一笔落定
+        if let previous = recentlyDetached, previous.id != meeting.id {
+            purge(previous)
+        }
+        meetings.removeAll { $0.id == meeting.id }
+        recentlyDetached = meeting
+        save()
+    }
+
+    /// 撤销。返回被放回去的记录。
+    @discardableResult
+    func undoDetach() -> Meeting? {
+        guard let meeting = recentlyDetached else { return nil }
+        recentlyDetached = nil
+        if !meetings.contains(where: { $0.id == meeting.id }) {
+            meetings.append(meeting)
+            meetings.sort { $0.startedAt > $1.startedAt }
+            save()
+        }
+        AppLog.info("Store", "撤销删除「\(meeting.title)」")
+        return meeting
+    }
+
+    /// 撤销窗口过了：落定，真删音频。
+    func commitDetach() {
+        guard let meeting = recentlyDetached else { return }
+        recentlyDetached = nil
+        purge(meeting)
+    }
+
+    private func purge(_ meeting: Meeting) {
         for seg in meeting.segments {
             let url = Self.recordingsDirectory().appendingPathComponent(seg.fileName)
             try? FileManager.default.removeItem(at: url)

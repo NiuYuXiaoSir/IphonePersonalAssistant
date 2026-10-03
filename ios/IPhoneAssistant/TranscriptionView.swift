@@ -1,17 +1,24 @@
 import SwiftUI
 import Speech
 
+/// 语音转写页。
+///
+/// 版式用系统 List。转写是长任务，所以：进度是确定的（第 N / M 段），
+/// 并且随时可以停下来——已经转好的部分会保留（HIG 的 Progress 页：让用户能中断）。
 struct TranscriptionView: View {
     @EnvironmentObject private var store: MeetingStore
     let meetingID: String
 
     @State private var busy = false
     @State private var progress = ""
+    @State private var progressDone = 0
+    @State private var progressTotal = 0
     @State private var report = ""
     @State private var useOnDevice = true
     @State private var authStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
     @State private var preview = ""
     @State private var loaded = false
+    @State private var runTask: Task<Void, Never>?
 
     private var meeting: Meeting? { store.meeting(id: meetingID) }
 
@@ -25,7 +32,7 @@ struct TranscriptionView: View {
                 if !preview.isEmpty {
                     Section("当前文字（\(preview.count) 字）") {
                         Text(preview)
-                            .font(.system(.caption2, design: .monospaced))
+                            .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                     }
                 }
@@ -41,12 +48,13 @@ struct TranscriptionView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(YBColor.bg)
-        .listRowBackground(YBColor.surface)
         .navigationTitle("语音转写")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: refresh)
+        .onDisappear {
+            // 离开页面就把任务停掉，别让它在后台接着跑
+            runTask?.cancel()
+        }
     }
 
     // MARK: - 区块
@@ -91,13 +99,28 @@ struct TranscriptionView: View {
         Section {
             Button(busy ? "转写中…" : "转写全部 \(m.segments.count) 段") { runAll(m) }
                 .disabled(busy || m.segments.isEmpty)
-            if !progress.isEmpty {
-                Text(progress).font(.caption).foregroundStyle(.secondary)
+
+            if busy {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: Double(progressDone),
+                                 total: Double(max(progressTotal, 1)))
+                    Text(progress)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("停止", role: .destructive) {
+                        runTask?.cancel()
+                        runTask = nil
+                        busy = false
+                        progress = ""
+                        report = "已停止。已经转好的部分都保存了，可以之后接着转。"
+                    }
+                }
+                .padding(.vertical, 2)
             }
         } header: {
             Text("全部转写")
         } footer: {
-            Text("每转完一段就立即存一次。中途失败也不会丢掉已经转好的部分。")
+            Text("每转完一段就立即存一次。中途失败或手动停止，都不会丢掉已经转好的部分。")
         }
     }
 
@@ -126,15 +149,18 @@ struct TranscriptionView: View {
         busy = true
         report = ""
         progress = "正在转写 \(first.fileName)…"
+        progressDone = 0
+        progressTotal = 1
         let onDevice = useOnDevice
 
-        Task {
+        runTask = Task {
             do {
                 let url = MeetingStore.recordingsDirectory().appendingPathComponent(first.fileName)
                 let text = try await TranscriptionService.recognize(url: url, onDevice: onDevice)
                 await MainActor.run {
                     self.busy = false
                     self.progress = ""
+                    self.progressDone = 1
                     self.preview = text
                     self.report = "✅ 第 1 段成功，\(text.count) 字\n\n预览：\n\(text.prefix(400))"
                 }
@@ -153,14 +179,19 @@ struct TranscriptionView: View {
         report = ""
         let segments = m.segments
         let onDevice = useOnDevice
+        progressTotal = segments.count
+        progressDone = 0
 
-        Task {
+        runTask = Task {
             var pieces: [String] = []
             var failures: [String] = []
+            var stopped = false
 
             for (index, seg) in segments.enumerated() {
+                if Task.isCancelled { stopped = true; break }
                 await MainActor.run {
                     self.progress = "第 \(index + 1) / \(segments.count) 段：\(seg.fileName)"
+                    self.progressDone = index
                 }
                 do {
                     let url = MeetingStore.recordingsDirectory().appendingPathComponent(seg.fileName)
@@ -172,6 +203,7 @@ struct TranscriptionView: View {
                     let joined = pieces.joined(separator: "\n")
                     await MainActor.run {
                         self.saveTranscript(joined)
+                        self.progressDone = index + 1
                     }
                 } catch {
                     failures.append("第 \(index + 1) 段：\(error.localizedDescription)")
@@ -185,6 +217,7 @@ struct TranscriptionView: View {
                 self.busy = false
                 self.progress = ""
                 var lines = ["完成：\(ok) / \(segments.count) 段有文字"]
+                if stopped { lines.append("（中途停止了，剩下的段没转）") }
                 if !bad.isEmpty {
                     lines.append("失败 \(bad.count) 段：")
                     lines.append(contentsOf: bad.prefix(10).map { "  " + $0 })

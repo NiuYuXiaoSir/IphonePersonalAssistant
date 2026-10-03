@@ -15,9 +15,16 @@ struct ToastModifier: ViewModifier {
     /// 带一个动作的（比如「撤销」）
     var actionTitle: String?
     var action: (() -> Void)?
+    /// 停多久。撤销这种要留出反应时间的给 4 秒。
+    var duration: TimeInterval = 1.6
+    /// 时间到了、用户也没点动作——该收尾了（例如把「撤下的删除」真删掉）。
+    /// 注意：点了动作按钮不会走这里。
+    var onExpire: (() -> Void)?
 
     @State private var visible = false
     @State private var dismissTask: Task<Void, Never>?
+    /// 每次弹出换一个号，防止上一轮的定时器把这一轮收掉
+    @State private var token = 0
 
     func body(content: Content) -> some View {
         content
@@ -44,8 +51,10 @@ struct ToastModifier: ViewModifier {
 
             if let actionTitle, let action {
                 Button(actionTitle) {
+                    dismissTask?.cancel()
+                    visible = false
+                    clearLater()
                     action()
-                    hide()
                 }
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.plain)
@@ -58,25 +67,32 @@ struct ToastModifier: ViewModifier {
         .overlay(Capsule().strokeBorder(Color(uiColor: .separator), lineWidth: 0.5))
         .padding(.horizontal, 20)
         .padding(.top, 8)
-        .onTapGesture(perform: hide)
+        .onTapGesture {
+            dismissTask?.cancel()
+            visible = false
+            clearLater()
+            onExpire?()
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isStaticText)
     }
 
     private func present() {
         dismissTask?.cancel()
+        token += 1
+        let current = token
         visible = true
         dismissTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_600_000_000)
-            guard !Task.isCancelled else { return }
-            hide()
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            guard !Task.isCancelled, current == token else { return }
+            visible = false
+            clearLater()
+            onExpire?()
         }
     }
 
-    private func hide() {
-        dismissTask?.cancel()
-        visible = false
-        // 把绑定清空：同一条文案连着弹两次时，onChange 才会再触发一次
+    /// 把绑定清空：同一条文案连着弹两次时，onChange 才会再触发一次
+    private func clearLater() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [visible] in
             if !visible { message = "" }
         }
@@ -92,7 +108,13 @@ extension View {
     /// 带一个动作的轻提示（撤销、重试）。
     func toast(_ message: Binding<String>,
                actionTitle: String,
+               duration: TimeInterval = 4,
+               onExpire: (() -> Void)? = nil,
                action: @escaping () -> Void) -> some View {
-        modifier(ToastModifier(message: message, actionTitle: actionTitle, action: action))
+        modifier(ToastModifier(message: message,
+                               actionTitle: actionTitle,
+                               action: action,
+                               duration: duration,
+                               onExpire: onExpire))
     }
 }
