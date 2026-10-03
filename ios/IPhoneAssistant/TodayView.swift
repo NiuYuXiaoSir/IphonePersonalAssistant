@@ -71,19 +71,7 @@ struct TodayView: View {
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
 
-            HStack(spacing: 10) {
-                actionButton("说一句话", icon: "bubble.left.and.bubble.right") {
-                    let thread = chats.createThread()
-                    path.append(TodayChatRoute(id: thread.id))
-                }
-                actionButton("速记", icon: "square.and.pencil") {
-                    router.showQuickAdd = true
-                }
-                actionButton("拍照", icon: "camera") {
-                    let thread = chats.createThread()
-                    path.append(TodayChatRoute(id: thread.id))
-                }
-            }
+            quickActions
             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
         } header: {
@@ -91,14 +79,43 @@ struct TodayView: View {
         }
     }
 
-    private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func openChat() {
+        let thread = chats.createThread()
+        path.append(TodayChatRoute(id: thread.id))
+    }
+
+    /// 三个快捷动作。
+    ///
+    /// `ViewThatFits` 兜底：横排放不下（比如系统字号调到最大）就自动改竖排。
+    /// 上一版直接给 Label 加 maxWidth 平分宽度，结果宽度不够时文字被挤成一列竖着排——
+    /// 所以每个 Label 都要 `fixedSize()`：宁可让它撑开容器，也不许把字压弯。
+    @ViewBuilder
+    private var quickActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                quickAction("说一句话", icon: "bubble.left.and.bubble.right", wide: false) { openChat() }
+                quickAction("速记", icon: "square.and.pencil", wide: false) { router.showQuickAdd = true }
+                quickAction("拍照", icon: "camera", wide: false) { openChat() }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                quickAction("说一句话", icon: "bubble.left.and.bubble.right", wide: true) { openChat() }
+                quickAction("速记", icon: "square.and.pencil", wide: true) { router.showQuickAdd = true }
+                quickAction("拍照", icon: "camera", wide: true) { openChat() }
+            }
+        }
+    }
+
+    private func quickAction(_ title: String, icon: String, wide: Bool,
+                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
                 .font(.subheadline)
-                .frame(maxWidth: .infinity)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(maxWidth: wide ? .infinity : nil)
         }
         .buttonStyle(.bordered)
-        .controlSize(.large)
+        .buttonBorderShape(.capsule)
     }
 
     private var greeting: String {

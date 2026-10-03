@@ -291,6 +291,7 @@ struct ChatListView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+            .tint(Color.secondary)
             .accessibilityLabel("「\(thread.title)」的更多操作")
         }
         .swipeActions(edge: .trailing) {

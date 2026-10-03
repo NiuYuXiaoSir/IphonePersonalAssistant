@@ -185,7 +185,7 @@ struct MeetingsView: View {
                 if !list.isEmpty {
                     Section(bucket.title) {
                         ForEach(list) { meeting in
-                            row(meeting)
+                            row(meeting, showDate: bucket.showsFullDate)
                         }
                     }
                 }
@@ -195,7 +195,7 @@ struct MeetingsView: View {
 
     /// 时间分段：本周和更早都是相对「今天」算的，不和月份挂钩
     private enum Bucket: String, CaseIterable, Identifiable {
-        case today, yesterday, thisWeek, earlier
+        case today, yesterday, thisWeek, thisMonth, earlier
 
         var id: String { rawValue }
 
@@ -204,23 +204,35 @@ struct MeetingsView: View {
             case .today:     return "今天"
             case .yesterday: return "昨天"
             case .thisWeek:  return "本周"
+            case .thisMonth: return "本月"
             case .earlier:   return "更早"
             }
         }
 
+        /// 分组标题已经把日子说清楚了（今天/昨天），行里就不用再报一遍日期
+        var showsFullDate: Bool {
+            self != .today && self != .yesterday
+        }
+
         func contains(_ date: Date) -> Bool {
             let calendar = Calendar.current
+            let inThisWeek: Bool = {
+                guard let week = calendar.dateInterval(of: .weekOfYear, for: Date()) else { return false }
+                return week.contains(date)
+            }()
             switch self {
             case .today:
                 return calendar.isDateInToday(date)
             case .yesterday:
                 return calendar.isDateInYesterday(date)
             case .thisWeek:
-                guard let week = calendar.dateInterval(of: .weekOfYear, for: Date()) else { return false }
-                return week.contains(date) && !calendar.isDateInToday(date) && !calendar.isDateInYesterday(date)
+                return inThisWeek && !calendar.isDateInToday(date) && !calendar.isDateInYesterday(date)
+            case .thisMonth:
+                // 本周之外的、本月的：光有「本周」不够——周日的手机上看，周四那场会
+                // 掉进「更早」显得很怪（其实才三天前）
+                return calendar.isDate(date, equalTo: Date(), toGranularity: .month) && !inThisWeek
             case .earlier:
-                guard let week = calendar.dateInterval(of: .weekOfYear, for: Date()) else { return false }
-                return date < week.start
+                return !calendar.isDate(date, equalTo: Date(), toGranularity: .month)
             }
         }
     }
@@ -243,7 +255,8 @@ struct MeetingsView: View {
                                 ForEach(month.days) { day in
                                     DisclosureGroup(isExpanded: expansion(day.id)) {
                                         ForEach(day.meetings) { meeting in
-                                            row(meeting)
+                                            // 归档视图里分组标题已经写了日期
+                                            row(meeting, showDate: false)
                                         }
                                     } label: {
                                         groupLabel(dayLabel(day.date),
@@ -290,7 +303,7 @@ struct MeetingsView: View {
 
     // MARK: - 一行
 
-    private func row(_ meeting: Meeting) -> some View {
+    private func row(_ meeting: Meeting, showDate: Bool = true) -> some View {
         NavigationLink(value: meeting.id) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -303,7 +316,7 @@ struct MeetingsView: View {
                         .foregroundStyle(.secondary)
                         .layoutPriority(1)
                 }
-                Text(Self.metaLine(meeting))
+                Text(Self.metaLine(meeting, showDate: showDate))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -340,8 +353,9 @@ struct MeetingsView: View {
     }
 
     /// 一行灰字说清这场会的关键信息，比挂一排彩色小标签安静得多
-    private static func metaLine(_ m: Meeting) -> String {
-        var parts = [timeText(m.startedAt), "录到 " + RecordingService.durationText(m.durationSeconds)]
+    private static func metaLine(_ m: Meeting, showDate: Bool = true) -> String {
+        var parts = [showDate ? timeText(m.startedAt) : timeFormatter.string(from: m.startedAt),
+                     "录到 " + RecordingService.durationText(m.durationSeconds)]
         if let gap = m.gapSeconds, gap > 0.5 {
             parts.append("漏录 " + RecordingService.durationText(gap))
         }
@@ -363,6 +377,7 @@ struct MeetingsView: View {
         df.dateFormat = "HH:mm"
         return df
     }()
+
 
     private static func timeText(_ date: Date) -> String {
         let calendar = Calendar.current
