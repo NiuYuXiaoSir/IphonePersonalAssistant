@@ -17,11 +17,16 @@ final class SettingsStore: ObservableObject {
     @Published var availableModels: [String] = []
     @Published var isFetchingModels: Bool = false
     @Published var modelListResult: String = ""
+    /// 触觉反馈。HIG 的 Playing haptics 页说触觉只能补充反馈、而且必须能关。
+    @Published var hapticsEnabled: Bool {
+        didSet { UserDefaults.standard.set(hapticsEnabled, forKey: Keys.haptics) }
+    }
 
     private enum Keys {
         static let preset = "llm.preset"
         static let baseURL = "llm.baseURL"
         static let model = "llm.model"
+        static let haptics = "ui.haptics"
     }
 
     init() {
@@ -29,6 +34,8 @@ final class SettingsStore: ObservableObject {
         preset = saved
         baseURL = UserDefaults.standard.string(forKey: Keys.baseURL) ?? saved.defaultBaseURL
         model = UserDefaults.standard.string(forKey: Keys.model) ?? saved.defaultModel
+        // 默认开着；没存过就当作开
+        hapticsEnabled = (UserDefaults.standard.object(forKey: Keys.haptics) as? Bool) ?? true
         refreshKeyStatus()
     }
 

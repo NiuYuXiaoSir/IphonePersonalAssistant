@@ -18,6 +18,7 @@ struct SettingsView: View {
                 credentialSection
                 testSection
                 systemSection
+                interfaceSection
                 advancedSection
             }
             // 这一页有三个输入框（地址、模型名、密钥），往下滑一下收掉，
@@ -220,6 +221,18 @@ struct SettingsView: View {
             Text("麦克风、语音识别、相机、日历、提醒事项、通知的开关都在系统设置里。这些权限都是用到的时候才申请，拒绝了也能随时在这里改回来。")
         }
     }
+    // MARK: - 界面
+
+    private var interfaceSection: some View {
+        Section {
+            Toggle("触觉反馈", isOn: $settings.hapticsEnabled)
+        } header: {
+            Text("界面")
+        } footer: {
+            Text("开始和结束录音、打标记、写入系统成功、删除时会有一点点振动。录音过程中只用最轻的一档，免得连续振动干扰麦克风。")
+        }
+    }
+
     // MARK: - 高级
 
     /// 诊断原本占一个页签，那是拿开发者的便利换日常的眼球——收进这里，功能一个不少。

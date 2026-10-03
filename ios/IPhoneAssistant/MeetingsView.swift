@@ -9,6 +9,7 @@ import SwiftUI
 /// 删除是「撤下 + 撤销」，不再弹确认框——有了撤销，确认只是白打断一次。
 struct MeetingsView: View {
     @EnvironmentObject private var store: MeetingStore
+    @EnvironmentObject private var settings: SettingsStore
     @ObservedObject private var router = AppRouter.shared
     @ObservedObject private var history = SearchHistory.meetings
 
@@ -92,6 +93,7 @@ struct MeetingsView: View {
                    duration: 4,
                    onExpire: { store.commitDetach() },
                    action: { store.undoDetach() })
+            .sensoryFeedback(.warning, trigger: store.recentlyDetached?.id) { settings.hapticsEnabled }
         }
     }
 
@@ -446,5 +448,7 @@ struct MeetingsView: View {
 }
 
 #Preview {
-    MeetingsView().environmentObject(MeetingStore())
+    MeetingsView()
+        .environmentObject(MeetingStore())
+        .environmentObject(SettingsStore())
 }

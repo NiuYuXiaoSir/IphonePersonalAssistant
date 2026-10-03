@@ -37,6 +37,9 @@ struct ChatView: View {
     @State private var voicePrefix = ""
     /// 正在跑的请求。用来支持「停止」。
     @State private var sendTask: Task<Void, Never>?
+    /// 触觉触发器：写入成功一次、删除一次
+    @State private var hapticSuccess = 0
+    @State private var hapticWarning = 0
 
     /// 还没发出去的照片：先留在内存里，点发送时才落盘
     private struct Attachment: Identifiable {
@@ -102,6 +105,8 @@ struct ChatView: View {
             Text("这段对话的消息和图片都会被删掉，会话本身留着。已经写进提醒事项、日历、备忘的东西不受影响。")
         }
         .toast($toast)
+        .sensoryFeedback(.success, trigger: hapticSuccess) { settings.hapticsEnabled }
+        .sensoryFeedback(.warning, trigger: hapticWarning) { settings.hapticsEnabled }
     }
 
     // MARK: - 会话读写
@@ -271,6 +276,7 @@ struct ChatView: View {
             }
             .contextMenu {
                 Button(role: .destructive) {
+                    hapticWarning += 1
                     removeEntry(entry.id)
                 } label: {
                     Label("删除这条", systemImage: "trash")
@@ -431,6 +437,7 @@ struct ChatView: View {
             .accessibilityLabel("朗读这条回复")
 
             Button {
+                hapticWarning += 1
                 removeEntry(entry.id)
             } label: {
                 Image(systemName: "trash")
@@ -856,6 +863,7 @@ struct ChatView: View {
                     entry.result = lines.joined(separator: "\n")
 
                     if result.failed.isEmpty {
+                        hapticSuccess += 1
                         var text = "已写入 " + summary.joined(separator: "、") + "。"
                         if !selectedTodos.isEmpty {
                             text += "待办在提醒事项的「\(SystemWriter.reminderListName)」列表里。"

@@ -7,6 +7,7 @@ import SwiftUI
 /// 版式用系统 List + 系统搜索：分段、取消按钮、键盘收起都是系统给的。
 struct ChatListView: View {
     @EnvironmentObject private var chats: ChatStore
+    @EnvironmentObject private var settings: SettingsStore
     @ObservedObject private var router = AppRouter.shared
     @ObservedObject private var history = SearchHistory.chats
 
@@ -106,6 +107,7 @@ struct ChatListView: View {
                    duration: 4,
                    onExpire: { chats.commitDetachThread() },
                    action: { chats.undoDetachThread() })
+            .sensoryFeedback(.warning, trigger: chats.recentlyDetachedThread?.id) { settings.hapticsEnabled }
         }
     }
 

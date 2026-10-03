@@ -19,6 +19,9 @@ struct RecordView: View {
     @State private var phase: Phase = .idle
     @State private var saveMessage = ""
     @State private var summaryMessage = ""
+    /// 触觉的触发器：这两个数字一动，对应的振动就响一次
+    @State private var hapticStart = 0
+    @State private var hapticSaved = 0
 
     /// 计时器字号跟着系统字号放大，但仍然是大号的
     @ScaledMetric(relativeTo: .largeTitle) private var timerSize: CGFloat = 56
@@ -51,6 +54,10 @@ struct RecordView: View {
                 }
             }
             .onAppear(perform: onAppearAction)
+            // 触觉：开始、打标记、存好各一次；录音中只有最轻的那一档
+            .sensoryFeedback(.impact(weight: .medium), trigger: hapticStart) { settings.hapticsEnabled }
+            .sensoryFeedback(.impact(weight: .light), trigger: recorder.markerCount) { settings.hapticsEnabled }
+            .sensoryFeedback(.success, trigger: hapticSaved) { settings.hapticsEnabled }
         }
     }
 
@@ -228,6 +235,7 @@ struct RecordView: View {
         saveMessage = ""
         summaryMessage = ""
         phase = .recording
+        hapticStart += 1
         recorder.start()
     }
 
@@ -253,6 +261,7 @@ struct RecordView: View {
                 if !transcript.isEmpty { m.status = "transcribed" }
                 self.store.add(m)
                 self.phase = .done
+                self.hapticSaved += 1
 
                 var lines = ["已保存 \(m.segments.count) 段，共 \(RecordingService.durationText(m.durationSeconds))"]
                 if transcript.isEmpty {
