@@ -319,13 +319,63 @@ final class ChatStore: ObservableObject {
 
     func deleteThread(id: String) {
         guard let index = threads.firstIndex(where: { $0.id == id }) else { return }
-        for entry in threads[index].entries {
+        let thread = threads[index]
+        threads.remove(at: index)
+        purgeThread(thread)
+        writeNow()
+    }
+
+    // MARK: - 删除与撤销
+    //
+    // 和会议一样的三段式：先撤下（图片留着），撤销窗口过了才真删。
+    // 有撤销就不该再弹确认框——HIG 的 Alerts 页：「Avoid displaying alerts for common, undoable actions」。
+
+    /// 刚撤下、还在撤销窗口里的会话
+    @Published private(set) var recentlyDetachedThread: ChatThread?
+
+    func detachThread(id: String) {
+        guard let index = threads.firstIndex(where: { $0.id == id }) else { return }
+        // 上一笔还没撤销完就删下一笔：先把上一笔落定
+        if let previous = recentlyDetachedThread, previous.id != id {
+            purgeThread(previous)
+        }
+        let thread = threads.remove(at: index)
+        recentlyDetachedThread = thread
+        writeNow()
+    }
+
+    @discardableResult
+    func undoDetachThread() -> ChatThread? {
+        guard let thread = recentlyDetachedThread else { return nil }
+        recentlyDetachedThread = nil
+        if !threads.contains(where: { $0.id == thread.id }) {
+            threads.append(thread)
+            threads.sort { $0.updatedAt > $1.updatedAt }
+            writeNow()
+        }
+        AppLog.info("Chat", "撤销删除会话「\(thread.title)」")
+        return thread
+    }
+
+    /// 撤销窗口过了：落定，真删图片
+    func commitDetachThread() {
+        guard let thread = recentlyDetachedThread else { return }
+        recentlyDetachedThread = nil
+        purgeThread(thread)
+    }
+
+    private func purgeThread(_ thread: ChatThread) {
+        for entry in thread.entries {
             for name in entry.images {
                 try? FileManager.default.removeItem(at: Self.imageURL(named: name))
             }
         }
-        threads.remove(at: index)
-        writeNow()
+        AppLog.info("Chat", "删除会话「\(thread.title)」及其 \(thread.entries.count) 条消息")
+    }
+
+    /// 重发 / 重试时要把原图读回来
+    func imageData(named name: String) -> Data? {
+        try? Data(contentsOf: Self.imageURL(named: name))
     }
 
     func clearThread(id: String) {

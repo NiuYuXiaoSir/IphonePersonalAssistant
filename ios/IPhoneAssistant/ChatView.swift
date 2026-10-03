@@ -8,9 +8,9 @@ import PhotosUI
 /// 助手回过来的卡片就是要建的东西，确认一下就能写进系统。
 /// 需要自己一项项填的时候去「速记」页，那是给人用手填的。
 ///
-/// 版式照元宝：用户消息是右边的灰色气泡，助手的话是不带气泡的正文，
-/// 下面跟一排方形小按钮（复制 / 朗读 / 删除）；底部是一条圆角胶囊，
-/// 相机、输入框、语音、发送都在胶囊里面，不再是几个分开的圆按钮。
+/// 版式全是系统件：用户消息是右边的灰色气泡，助手的话直接排（不套气泡），
+/// 底部一条输入胶囊。模型回来的话按 Markdown 轻渲染——问「今天做了什么」时它常带列表和粗体，
+/// 不渲染就会露出 ** 和 - 这些符号。
 ///
 /// 它是被「对话」列表推进来的（外面已经有 NavigationStack），所以这里不再套一层。
 struct ChatView: View {
@@ -33,12 +33,21 @@ struct ChatView: View {
     @State private var toast = ""
     /// 语音输入是「接着已经打的字往下说」，不是把输入框清空重来
     @State private var voicePrefix = ""
+    /// 正在跑的请求。用来支持「停止」。
+    @State private var sendTask: Task<Void, Never>?
 
     /// 还没发出去的照片：先留在内存里，点发送时才落盘
     private struct Attachment: Identifiable {
         let id = UUID()
         let data: Data
         let image: UIImage
+    }
+
+    /// 一组消息 + 它上面要不要加日期分隔
+    private struct DisplayEntry: Identifiable {
+        let id: String
+        let entry: ChatEntry
+        let separator: String?
     }
 
     private let bottomAnchor = "chat-bottom"
@@ -58,7 +67,7 @@ struct ChatView: View {
                 conversation
             }
         }
-        .background(YBColor.bg)
+        .background(Color(uiColor: .systemBackground))
         .navigationTitle(threadTitle)
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
@@ -78,6 +87,7 @@ struct ChatView: View {
         }
         .onDisappear {
             if liveASR.isRunning { liveASR.stop() }
+            sendTask?.cancel()
             YBSpeech.stop()
         }
         .confirmationDialog("清空这段对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
@@ -86,14 +96,7 @@ struct ChatView: View {
         } message: {
             Text("这段对话的消息和图片都会被删掉，会话本身留着。已经写进提醒事项、日历、备忘的东西不受影响。")
         }
-        .alert("提示", isPresented: Binding(
-            get: { !toast.isEmpty },
-            set: { if !$0 { toast = "" } }
-        )) {
-            Button("知道了") { toast = "" }
-        } message: {
-            Text(toast)
-        }
+        .toast($toast)
     }
 
     // MARK: - 会话读写
@@ -101,6 +104,19 @@ struct ChatView: View {
     private var entries: [ChatEntry] { chats.thread(id: threadID)?.entries ?? [] }
 
     private var threadTitle: String { chats.thread(id: threadID)?.title ?? "对话" }
+
+    /// 跨天的地方插一条日期分隔
+    private var displayEntries: [DisplayEntry] {
+        var out: [DisplayEntry] = []
+        var lastDay: Date?
+        for entry in entries {
+            let day = Calendar.current.startOfDay(for: entry.createdAt)
+            let separator = (lastDay == nil || lastDay != day) ? Self.dayLabel(entry.createdAt) : nil
+            out.append(DisplayEntry(id: entry.id, entry: entry, separator: separator))
+            lastDay = day
+        }
+        return out
+    }
 
     private func entry(_ id: String) -> ChatEntry? {
         entries.first { $0.id == id }
@@ -121,20 +137,17 @@ struct ChatView: View {
     }
 
     // MARK: - 空对话的问候
-    //
-    // 元宝首页中间就是一句大字问候，这里照搬：整块内容在可用区域里居中，
-    // 下面跟几个能直接点开的引子——第一次用的人往往不知道该说多具体。
 
     private var welcome: some View {
         VStack(spacing: 18) {
             VStack(spacing: 10) {
                 Text("Hi，有什么要办的？")
-                    .font(.system(size: 28, weight: .bold))
+                    .font(.title.bold())
                     .multilineTextAlignment(.center)
 
                 Text("说一句就把待办、日程、备忘、提醒建出来，\n核对一下直接进提醒事项和日历。\n它记得你说过的事——做了什么、要做什么都记着。")
-                    .font(.system(size: 15))
-                    .foregroundStyle(YBColor.textSecondary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -147,16 +160,16 @@ struct ChatView: View {
                         draft = text
                     } label: {
                         Text(text)
-                            .font(.system(size: 14))
-                            .foregroundStyle(Color.primary)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(YBColor.surface,
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(Color(uiColor: .secondarySystemBackground),
                                         in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
-                    .buttonStyle(YBPressStyle())
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -167,12 +180,12 @@ struct ChatView: View {
     private var keyStatus: some View {
         if settings.hasKey {
             Label("凭证已就绪 · \(settings.model)", systemImage: "checkmark.seal")
-                .font(.system(size: 13))
-                .foregroundStyle(YBColor.success)
+                .font(.footnote)
+                .foregroundStyle(.green)
         } else {
             Label("还没配置密钥，先去「设置」页填一个", systemImage: "exclamationmark.triangle")
-                .font(.system(size: 13))
-                .foregroundStyle(YBColor.warning)
+                .font(.footnote)
+                .foregroundStyle(.orange)
         }
     }
 
@@ -181,9 +194,16 @@ struct ChatView: View {
     private var conversation: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(entries) { entry in
-                        row(entry).id(entry.id)
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    ForEach(displayEntries) { item in
+                        if let separator = item.separator {
+                            Text(separator)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 2)
+                        }
+                        row(item.entry).id(item.entry.id)
                     }
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }
@@ -235,12 +255,12 @@ struct ChatView: View {
                 if !entry.images.isEmpty { imageStrip(entry.images) }
                 if !entry.text.isEmpty {
                     Text(entry.text)
-                        .font(YBFont.chatBody)
-                        .foregroundStyle(Color.primary)
+                        .font(.body)
+                        .foregroundStyle(.primary)
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(YBColor.surfaceHi,
+                        .background(Color(uiColor: .secondarySystemBackground),
                                     in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
             }
@@ -265,9 +285,9 @@ struct ChatView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 } else {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(YBColor.surface)
+                        .fill(Color(uiColor: .secondarySystemBackground))
                         .frame(width: 88, height: 88)
-                        .overlay(Image(systemName: "photo").foregroundStyle(YBColor.textSecondary))
+                        .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
                 }
             }
         }
@@ -281,16 +301,30 @@ struct ChatView: View {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text(entry.text.isEmpty ? "正在整理…" : entry.text)
-                        .font(YBFont.chatBody)
-                        .foregroundStyle(YBColor.textSecondary)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("停止") { stopGenerating() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                 }
                 .padding(.vertical, 2)
             } else if !entry.text.isEmpty {
-                Text(entry.text)
-                    .font(YBFont.chatBody)
-                    .foregroundStyle(entry.state == .failed ? YBColor.warning : Color.primary)
+                rendered(entry.text)
+                    .font(.body)
+                    .foregroundStyle(entry.state == .failed ? Color.orange : Color.primary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if entry.state == .failed {
+                Button {
+                    retry(assistantEntryID: entry.id)
+                } label: {
+                    Label("重试", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
             if let items = entry.items, !items.isEmpty {
@@ -304,12 +338,12 @@ struct ChatView: View {
                     ForEach(entry.remembered, id: \.self) { line in
                         HStack(alignment: .top, spacing: 5) {
                             Image(systemName: "brain")
-                                .font(.system(size: 10))
-                                .foregroundStyle(YBColor.textTertiary)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                                 .padding(.top, 2)
                             Text(line)
-                                .font(.system(size: 12))
-                                .foregroundStyle(YBColor.textTertiary)
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                                 .lineLimit(2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -328,16 +362,28 @@ struct ChatView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// 受控的 Markdown：粗体、行内代码、列表、引用这些会正常显示；
+    /// 解析不了就当纯文本画出来，绝不吞内容。
+    private func rendered(_ text: String) -> Text {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible)
+        if let attributed = try? AttributedString(markdown: text, options: options) {
+            return Text(attributed)
+        }
+        return Text(text)
+    }
+
     private func resultCard(_ entry: ChatEntry, result: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(YBColor.success)
+                    .font(.footnote)
+                    .foregroundStyle(.green)
                     .padding(.top, 2)
                 Text(result)
-                    .font(.system(size: 14))
-                    .foregroundStyle(YBColor.textSecondary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -357,25 +403,38 @@ struct ChatView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(YBColor.surface,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// 助手消息下面那排方形小按钮。元宝是五个（复制/赞/踩/朗读/转发），
-    /// 这里只留真的能用的三个：复制、朗读、删除。
+    /// 助手消息下面那排小按钮：复制、朗读、删除
     private func actionRow(_ entry: ChatEntry) -> some View {
-        HStack(spacing: 8) {
-            YBSquareButton(icon: "doc.on.doc") {
+        HStack(spacing: 4) {
+            Button {
                 UIPasteboard.general.string = entry.text
                 toast = "已复制这条回复"
+            } label: {
+                Image(systemName: "doc.on.doc")
             }
-            YBSquareButton(icon: "speaker.wave.2") {
+            .accessibilityLabel("复制这条回复")
+
+            Button {
                 YBSpeech.toggle(entry.text)
+            } label: {
+                Image(systemName: "speaker.wave.2")
             }
-            YBSquareButton(icon: "trash", tint: YBColor.danger) {
+            .accessibilityLabel("朗读这条回复")
+
+            Button {
                 removeEntry(entry.id)
+            } label: {
+                Image(systemName: "trash")
             }
+            .tint(.red)
+            .accessibilityLabel("删除这条回复")
         }
+        .font(.body)
+        .buttonStyle(.borderless)
     }
 
     // MARK: - 输入栏
@@ -385,12 +444,12 @@ struct ChatView: View {
             if !liveASR.message.isEmpty && !liveASR.isRunning && liveASR.message != "已停止" {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
+                        .font(.caption2)
                     Text(liveASR.message)
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .foregroundStyle(YBColor.warning)
+                .foregroundStyle(.orange)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
             }
@@ -411,45 +470,47 @@ struct ChatView: View {
                     }
                 } label: {
                     Image(systemName: "camera")
-                        .font(.system(size: 20))
-                        .foregroundStyle(YBColor.textSecondary)
-                        .frame(width: 36, height: 36)
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .disabled(busy)
+                .accessibilityLabel("添加照片")
 
                 TextField(composerPlaceholder, text: $draft, axis: .vertical)
                     .lineLimit(1...5)
-                    .font(YBFont.chatBody)
-                    .padding(.vertical, 8)
-                    .frame(minHeight: 36)
+                    .font(.body)
+                    .padding(.vertical, 10)
 
                 Button {
                     toggleVoice()
                 } label: {
                     Image(systemName: liveASR.isRunning ? "waveform.circle.fill" : "waveform")
-                        .font(.system(size: 21))
-                        .foregroundStyle(liveASR.isRunning ? YBColor.danger : YBColor.textSecondary)
-                        .frame(width: 34, height: 36)
+                        .font(.title2)
+                        .foregroundStyle(liveASR.isRunning ? Color.red : Color.secondary)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                         .symbolEffect(.variableColor, isActive: liveASR.isRunning)
                 }
                 .disabled(busy)
+                .accessibilityLabel(liveASR.isRunning ? "停止语音输入" : "开始语音输入")
 
                 Button {
                     send()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 28))
-                        .foregroundStyle(canSend ? YBColor.accent : YBColor.textTertiary)
-                        .frame(width: 36, height: 36)
+                        .font(.title)
+                        .foregroundStyle(canSend ? Color.accentColor : Color(uiColor: .tertiaryLabel))
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .disabled(!canSend)
+                .accessibilityLabel("发送")
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
-            .background(YBColor.surface,
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(Color(uiColor: .secondarySystemBackground),
                         in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
         .padding(.horizontal, 12)
@@ -471,7 +532,7 @@ struct ChatView: View {
                                 attachments.removeAll { $0.id == item.id }
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 17))
+                                    .font(.body)
                                     .foregroundStyle(.white, .black.opacity(0.5))
                             }
                             .buttonStyle(.plain)
@@ -507,20 +568,29 @@ struct ChatView: View {
         }
     }
 
-    /// 顶上的余额胶囊：点一下重新查
+    /// 顶上的余额：点一下重新查
     private var balanceChip: some View {
-        YBBalanceChip(text: balance.chipText,
-                      icon: balance.chipIcon,
-                      tint: balanceTint,
-                      busy: balance.isRefreshing) {
+        Button {
             balance.refresh(settings: settings)
+        } label: {
+            HStack(spacing: 5) {
+                if balance.isRefreshing {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: balance.chipIcon).font(.caption)
+                }
+                Text(balance.chipText).font(.footnote)
+            }
+            .foregroundStyle(balanceTint)
         }
+        .disabled(balance.isRefreshing)
+        .accessibilityLabel("余额：\(balance.chipText)，点击刷新")
     }
 
     private var balanceTint: Color {
-        if balance.isLow { return YBColor.warning }
-        if balance.isUnavailable { return YBColor.textSecondary }
-        return Color.primary
+        if balance.isLow { return .orange }
+        if balance.isUnavailable { return .secondary }
+        return .primary
     }
 
     // MARK: - 状态与工具
@@ -555,12 +625,14 @@ struct ChatView: View {
             UIApplication.shared.open(url, options: [:], completionHandler: nil)
         } label: {
             HStack(spacing: 4) {
-                Text(title).font(.system(size: 13))
+                Text(title).font(.footnote)
                 Image(systemName: "arrow.up.forward.app")
-                    .font(.system(size: 10))
+                    .font(.caption2)
             }
         }
-        .buttonStyle(YBSoftButtonStyle())
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
     }
 
     private func openCamera() {
@@ -605,17 +677,21 @@ struct ChatView: View {
 
     // MARK: - 动作
 
-    private func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty else { return }
-
+    private func config() -> LLMConfig? {
         var config = settings.makeConfig()
         guard config.chatCompletionsURL != nil, !config.apiKey.isEmpty else {
             toast = "还没有可用的密钥，去「设置」页填一个再发。"
-            return
+            return nil
         }
-        // 这一段对话自己的 id，OpenCode 的网关按它做路由与缓存
+        // 这一段对话自己的 id，OpenCode 的网关按它做路由和缓存
         config.sessionID = threadID
+        return config
+    }
+
+    private func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !attachments.isEmpty else { return }
+        guard config() != nil else { return }
 
         if liveASR.isRunning { liveASR.stop() }
         voicePrefix = ""
@@ -629,6 +705,28 @@ struct ChatView: View {
         attachments = []
         chats.append(user, to: threadID)
 
+        dispatch(text: text, dataURLs: dataURLs)
+    }
+
+    /// 失败重试：把上一条用户消息原样再发一次（图片从磁盘读回来，不丢图）
+    private func retry(assistantEntryID: String) {
+        guard let index = entries.firstIndex(where: { $0.id == assistantEntryID }),
+              index > 0 else { return }
+        let userEntry = entries[index - 1]
+        guard userEntry.role == .user else { return }
+
+        let dataURLs: [String] = userEntry.images.compactMap { name in
+            guard let data = chats.imageData(named: name) else { return nil }
+            return "data:image/jpeg;base64,\(data.base64EncodedString())"
+        }
+        removeEntry(assistantEntryID)
+        dispatch(text: userEntry.text, dataURLs: dataURLs)
+    }
+
+    /// 真正发请求的那一段。send 和 retry 都走这里。
+    private func dispatch(text: String, dataURLs: [String]) {
+        guard let config = config() else { return }
+
         let thinking = ChatEntry(role: .assistant, text: "", state: .thinking)
         chats.append(thinking, to: threadID)
         let history = chats.historyText(threadID: threadID)
@@ -636,7 +734,8 @@ struct ChatView: View {
         // 「昨天说的那事」「明天要做什么」能接上，全靠它和上面的对话历史。
         let memory = MemoryStore.shared.digest(for: text)
 
-        Task {
+        sendTask?.cancel()
+        sendTask = Task {
             do {
                 let result = try await AIStructurer.parse(text: text,
                                                           images: dataURLs,
@@ -645,9 +744,30 @@ struct ChatView: View {
                                                           config: config)
                 await MainActor.run { apply(result, to: thinking.id, error: nil) }
             } catch {
-                await MainActor.run { apply(AIResult(), to: thinking.id, error: error.localizedDescription) }
+                let cancelled = Task.isCancelled || (error as? URLError)?.code == .cancelled
+                await MainActor.run {
+                    if cancelled {
+                        applyStopped(to: thinking.id)
+                    } else {
+                        apply(AIResult(), to: thinking.id, error: error.localizedDescription)
+                    }
+                }
             }
         }
+    }
+
+    /// 用户点了「停止」：保留已经拿到的部分，不要报成失败
+    private func stopGenerating() {
+        sendTask?.cancel()
+        sendTask = nil
+    }
+
+    private func applyStopped(to id: String) {
+        updateEntry(id) { entry in
+            entry.state = .ok
+            if entry.text.isEmpty { entry.text = "已停止。" }
+        }
+        chats.saveNow()
     }
 
     private func apply(_ result: AIResult, to id: String, error: String?) {
@@ -753,6 +873,15 @@ struct ChatView: View {
             }
         }
     }
+
+    // MARK: - 日期分隔
+
+    private static func dayLabel(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "今天" }
+        if calendar.isDateInYesterday(date) { return "昨天" }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
 }
 
 // MARK: - 条目卡片
@@ -770,14 +899,14 @@ private struct ItemsCard: View {
             ForEach($items) { $item in
                 itemRow($item)
                 if $item.wrappedValue.id != items.last?.id {
-                    Rectangle().fill(YBColor.line).frame(height: 1).padding(.leading, 44)
+                    Divider().padding(.leading, 44)
                 }
             }
-            Rectangle().fill(YBColor.line).frame(height: 1)
+            Divider()
             footer
         }
-        .background(YBColor.surface,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .disabled(busy)
     }
 
@@ -787,47 +916,48 @@ private struct ItemsCard: View {
                 item.wrappedValue.include.toggle()
             } label: {
                 Image(systemName: item.wrappedValue.include ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(item.wrappedValue.include ? YBColor.accent : YBColor.textTertiary)
+                    .font(.title3)
+                    .foregroundStyle(item.wrappedValue.include ? Color.accentColor : Color.secondary)
             }
             .buttonStyle(.plain)
             .padding(.top, 1)
+            .accessibilityLabel(item.wrappedValue.include ? "不写入这条" : "写入这条")
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
                     Image(systemName: item.wrappedValue.kind.symbol)
-                        .font(.system(size: 11))
-                        .foregroundStyle(YBColor.textSecondary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     TextField("标题", text: item.title, axis: .vertical)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.body.weight(.medium))
                         .lineLimit(1...3)
                     destinationMenu(item)
                 }
 
                 HStack(spacing: 8) {
                     Image(systemName: "clock")
-                        .font(.system(size: 11))
-                        .foregroundStyle(YBColor.textSecondary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     TextField("时间（可留空）", text: item.dueDate)
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     if item.wrappedValue.kind == .event {
                         TextField("分钟", value: item.durationMinutes, format: .number)
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                             .frame(width: 42)
                         Text("分钟")
-                            .font(.system(size: 12))
-                            .foregroundStyle(YBColor.textSecondary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
                 if !item.wrappedValue.notes.isEmpty {
                     Text(item.wrappedValue.notes)
-                        .font(.system(size: 12))
-                        .foregroundStyle(YBColor.textSecondary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(3)
                 }
             }
@@ -852,14 +982,14 @@ private struct ItemsCard: View {
         } label: {
             HStack(spacing: 3) {
                 Text(destination(of: item.wrappedValue.kind))
-                    .font(.system(size: 10))
+                    .font(.caption2)
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 7))
+                    .font(.system(size: 8))
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(YBColor.accent.opacity(0.16), in: Capsule())
-            .foregroundStyle(YBColor.accent)
+            .background(Color.accentColor.opacity(0.15), in: Capsule())
+            .foregroundStyle(Color.accentColor)
         }
     }
 
@@ -869,13 +999,13 @@ private struct ItemsCard: View {
                 let target = !allSelected
                 for index in items.indices { items[index].include = target }
             }
-            .font(.system(size: 13))
+            .font(.footnote)
             .buttonStyle(.plain)
-            .foregroundStyle(YBColor.accent)
+            .foregroundStyle(Color.accentColor)
 
             Text("\(items.filter { $0.include }.count)/\(items.count) 条")
-                .font(.system(size: 12))
-                .foregroundStyle(YBColor.textSecondary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Spacer()
 
@@ -887,7 +1017,8 @@ private struct ItemsCard: View {
                     Text(writeTitle)
                 }
             }
-            .buttonStyle(YBPrimaryButtonStyle())
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
             .disabled(busy || items.allSatisfy { !$0.include })
         }
         .padding(.horizontal, 12)

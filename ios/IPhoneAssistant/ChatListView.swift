@@ -2,9 +2,9 @@ import SwiftUI
 
 /// 对话列表：新建对话、分组、按时间分段的会话。
 ///
-/// 版式和元宝的侧栏一致：新建按钮、分组（文件夹）、今天/本月这样按时间分段。
 /// 一个话题一个会话，比所有东西都堆在一条时间线里好找；
 /// 长期用下来再按「工作」「家里」这类分组建文件夹。
+/// 版式用系统 List + 系统搜索：分段、取消按钮、键盘收起都是系统给的。
 struct ChatListView: View {
     @EnvironmentObject private var chats: ChatStore
     @ObservedObject private var router = AppRouter.shared
@@ -12,26 +12,32 @@ struct ChatListView: View {
 
     @State private var path = NavigationPath()
     @State private var query = ""
-    @State private var showingSearch = false
-    @FocusState private var searchFocused: Bool
-    @State private var foldersExpanded = true
     @State private var showNewFolder = false
     @State private var newFolderName = ""
     @State private var renamingFolder: ChatFolder?
     @State private var renameText = ""
+    @State private var undoMessage = ""
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                if searchActive {
-                    Section { searchRow }
-                    searchContent
-                } else {
-                    homeContent
+                newChatSection
+                if !chats.folders.isEmpty { folderSection }
+                threadSections
+            }
+            .navigationTitle("对话")
+            .searchable(text: $query,
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "搜索对话")
+            .searchSuggestions {
+                if query.isEmpty {
+                    ForEach(history.items, id: \.self) { keyword in
+                        Label(keyword, systemImage: "clock.arrow.circlepath")
+                            .searchCompletion(keyword)
+                    }
                 }
             }
-            .ybPageList()
-            .navigationTitle("对话")
+            .onSubmit(of: .search) { history.add(query) }
             .navigationDestination(for: String.self) { id in
                 ChatView(threadID: id)
             }
@@ -48,21 +54,14 @@ struct ChatListView: View {
                     } label: {
                         Image(systemName: "brain")
                     }
-                    Button {
-                        if showingSearch {
-                            cancelSearch()
-                        } else {
-                            showingSearch = true
-                            DispatchQueue.main.async { searchFocused = true }
-                        }
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                    }
+                    .accessibilityLabel("记忆：助理记住了什么")
+
                     Button {
                         showNewFolder = true
                     } label: {
                         Image(systemName: "folder.badge.plus")
                     }
+                    .accessibilityLabel("新建分组")
                 }
             }
             .alert("新建分组", isPresented: $showNewFolder) {
@@ -70,7 +69,6 @@ struct ChatListView: View {
                 Button("创建") {
                     chats.createFolder(name: newFolderName)
                     newFolderName = ""
-                    foldersExpanded = true
                 }
                 Button("取消", role: .cancel) { newFolderName = "" }
             } message: {
@@ -91,6 +89,16 @@ struct ChatListView: View {
             }
             .onAppear(perform: consumeShortcut)
             .onChange(of: router.pending) { _, _ in consumeShortcut() }
+            .onChange(of: chats.recentlyDetachedThread?.id) { _, _ in
+                if let thread = chats.recentlyDetachedThread {
+                    undoMessage = "已删除「\(thread.title)」"
+                }
+            }
+            .toast($undoMessage,
+                   actionTitle: "撤销",
+                   duration: 4,
+                   onExpire: { chats.commitDetachThread() },
+                   action: { chats.undoDetachThread() })
         }
     }
 
@@ -104,215 +112,104 @@ struct ChatListView: View {
         }
     }
 
-    // MARK: - 搜索
+    // MARK: - 新建
 
-    private var searchActive: Bool {
-        showingSearch || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var trimmedQuery: String {
-        query.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var searchRow: some View {
-        HStack(spacing: 12) {
-            YBSearchField(placeholder: "搜索对话",
-                          text: $query,
-                          focused: $searchFocused,
-                          onSubmit: { history.add(trimmedQuery) })
-            Button("取消") { cancelSearch() }
-                .font(.system(size: 16))
-                .foregroundStyle(YBColor.accent)
-        }
-        .padding(.top, 4)
-        .ybRow()
-    }
-
-    private func cancelSearch() {
-        searchFocused = false
-        showingSearch = false
-        query = ""
-    }
-
-    @ViewBuilder
-    private var searchContent: some View {
-        if trimmedQuery.isEmpty {
-            if !history.items.isEmpty {
-                Section {
-                    historyChips
-                } header: {
-                    YBPinnedHeader("历史记录") {
-                        Button {
-                            history.clear()
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 15))
-                                .foregroundStyle(YBColor.textSecondary)
-                        }
-                        .buttonStyle(YBPressStyle())
-                    }
-                }
-            }
-        } else {
-            let results = searchResults
-            if results.isEmpty {
-                Section {
-                    YBHint(text: "没有匹配「\(trimmedQuery)」的对话。搜索会同时匹配标题和对话内容。",
-                           icon: "magnifyingglass")
-                        .padding(.top, 12)
-                        .ybRow(horizontal: 0)
-                }
-            } else {
-                Section {
-                    ForEach(results.indices, id: \.self) { index in
-                        threadRow(results[index],
-                                  subtitle: results[index].updatedAt.formatted(date: .abbreviated, time: .shortened),
-                                  position: position(index, results.count),
-                                  isLast: index == results.count - 1)
-                    }
-                } header: {
-                    YBPinnedHeader("找到 \(results.count) 段对话")
-                }
-            }
-        }
-    }
-
-    private var historyChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(history.items, id: \.self) { keyword in
-                    YBTag(text: keyword) {
-                        query = keyword
-                        history.add(keyword)
-                    }
-                }
-            }
-            .padding(.horizontal, YBMetric.pagePad)
-            .padding(.bottom, YBMetric.rowGap)
-        }
-        .ybRow(horizontal: 0)
-    }
-
-    private var searchResults: [ChatThread] {
-        let keyword = trimmedQuery
-        guard !keyword.isEmpty else { return chats.threads }
-        return chats.threads.filter {
-            $0.title.localizedCaseInsensitiveContains(keyword)
-                || $0.preview.localizedCaseInsensitiveContains(keyword)
-        }
-    }
-
-    // MARK: - 正常态
-
-    @ViewBuilder
-    private var homeContent: some View {
+    private var newChatSection: some View {
         Section {
-            YBActionCard(title: "新建对话", icon: "square.and.pencil") {
+            Button {
                 let thread = chats.createThread()
                 path.append(thread.id)
+            } label: {
+                Label("新建对话", systemImage: "square.and.pencil")
+                    .frame(maxWidth: .infinity)
             }
-            .padding(.top, 4)
-            .ybRow()
-
-            YBHint(text: "说一句话就把待办、日程、备忘、提醒建出来，不用自己填表。右上角的脑子图标里能看到它记住了什么。")
-                .ybRow(horizontal: 0)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+        } footer: {
+            Text("说一句话就把待办、日程、备忘、提醒建出来，不用自己填表。右上角的脑子图标里能看到它记住了什么。")
         }
-
-        if !chats.folders.isEmpty { folderSection }
-        threadSections
     }
 
     // MARK: - 分组
 
-    @ViewBuilder
     private var folderSection: some View {
-        // 「收起分组」是这一组的最后一行：收起来时只剩它自己，
-        // 和元宝那边一样，一点就收掉整列文件夹
-        let total = foldersExpanded ? chats.folders.count + 1 : 1
-
-        Section {
-            if foldersExpanded {
-                ForEach(chats.folders.indices, id: \.self) { index in
-                    folderRow(chats.folders[index], position: position(index, total))
-                }
-            }
-
-            YBRow(title: foldersExpanded ? "收起分组" : "展开分组（\(chats.folders.count) 个）",
-                  icon: "folder",
-                  chevron: foldersExpanded ? "chevron.up" : "chevron.down",
-                  position: position(foldersExpanded ? chats.folders.count : 0, total)) {
-                withAnimation(.easeOut(duration: 0.15)) { foldersExpanded.toggle() }
-            }
-            .ybRow(bottom: YBMetric.rowGap)
-        } header: {
-            YBPinnedHeader("分组") {
+        Section("分组") {
+            ForEach(chats.folders) { folder in
                 Button {
-                    showNewFolder = true
+                    path.append(FolderRoute(folderID: folder.id))
                 } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(YBColor.textSecondary)
+                    HStack {
+                        Label(folder.name, systemImage: "folder")
+                            .foregroundStyle(.primary)
+                        Spacer(minLength: 8)
+                        Text("\(chats.threadCount(inFolder: folder.id))")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                .buttonStyle(YBPressStyle())
+                .swipeActions {
+                    Button(role: .destructive) {
+                        chats.deleteFolder(id: folder.id)
+                    } label: {
+                        Label("删分组", systemImage: "trash")
+                    }
+                    Button {
+                        renameText = folder.name
+                        renamingFolder = folder
+                    } label: {
+                        Label("重命名", systemImage: "pencil")
+                    }
+                    .tint(.accentColor)
+                }
             }
         }
-    }
-
-    private func folderRow(_ folder: ChatFolder, position: YBRowPosition) -> some View {
-        YBRow(title: folder.name,
-              detail: "\(chats.threadCount(inFolder: folder.id))",
-              icon: "folder",
-              chevron: "chevron.right",
-              position: position) {
-            path.append(FolderRoute(folderID: folder.id))
-        }
-        .swipeActions {
-            Button(role: .destructive) {
-                chats.deleteFolder(id: folder.id)
-            } label: {
-                Label("删分组", systemImage: "trash")
-            }
-            Button {
-                renameText = folder.name
-                renamingFolder = folder
-            } label: {
-                Label("重命名", systemImage: "pencil")
-            }
-            .tint(YBColor.accent)
-        }
-        .ybRow(bottom: position == .last ? YBMetric.rowGap : 0)
     }
 
     // MARK: - 会话
 
     @ViewBuilder
     private var threadSections: some View {
+        let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let ungrouped = chats.threads(inFolder: nil)
-        if ungrouped.isEmpty {
+
+        if searching {
+            let results = searchResults
+            if results.isEmpty {
+                ContentUnavailableView.search(text: query)
+                    .listRowBackground(Color.clear)
+            } else {
+                Section("找到 \(results.count) 段对话") {
+                    ForEach(results) { thread in
+                        threadRow(thread,
+                                  subtitle: thread.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                    }
+                }
+            }
+        } else if ungrouped.isEmpty {
             Section {
-                YBRow(title: chats.threads.isEmpty ? "还没有对话" : "未分组的对话是空的",
-                      subtitle: chats.threads.isEmpty
-                          ? "点上面的「新建对话」开始，说完一句话就会在这里留下一条。"
-                          : "展开分组看看，或者新建一段对话。",
-                      position: .only)
-                    .ybRow(bottom: YBMetric.rowGap)
-            } header: {
-                YBPinnedHeader("最近")
+                ContentUnavailableView {
+                    Label(chats.threads.isEmpty ? "还没有对话" : "未分组的对话是空的",
+                          systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text(chats.threads.isEmpty
+                         ? "点上面的「新建对话」开始，说完一句话就会在这里留下一条。"
+                         : "展开分组看看，或者新建一段对话。")
+                }
+                .listRowBackground(Color.clear)
             }
         } else {
             ForEach(TimeBucket.allCases) { bucket in
                 let list = bucket.filter(ungrouped)
                 if !list.isEmpty {
-                    Section {
-                        ForEach(list.indices, id: \.self) { index in
-                            threadRow(list[index],
-                                      subtitle: bucketSubtitle(list[index]),
-                                      position: position(index, list.count),
-                                      isLast: index == list.count - 1)
+                    Section(bucket.title) {
+                        ForEach(list) { thread in
+                            threadRow(thread, subtitle: bucketSubtitle(thread))
                         }
-                    } header: {
-                        // 今天 / 昨天 / 本月 / 更早：滚动时钉在屏幕顶上
-                        YBPinnedHeader(bucket.title)
                     }
                 }
             }
@@ -324,45 +221,70 @@ struct ChatListView: View {
         return thread.preview.isEmpty ? time : time + " · " + thread.preview
     }
 
-    private func threadRow(_ thread: ChatThread,
-                           subtitle: String,
-                           position: YBRowPosition,
-                           isLast: Bool) -> some View {
-        YBRow(title: thread.title,
-              subtitle: subtitle,
-              position: position) {
-            path.append(thread.id)
+    private var searchResults: [ChatThread] {
+        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return chats.threads }
+        return chats.threads.filter {
+            $0.title.localizedCaseInsensitiveContains(keyword)
+                || $0.preview.localizedCaseInsensitiveContains(keyword)
         }
-        .swipeActions {
-            Button(role: .destructive) {
-                chats.deleteThread(id: thread.id)
-            } label: {
-                Label("删除", systemImage: "trash")
-            }
-        }
-        .contextMenu {
-            Menu {
-                Button("不分组") { chats.moveThread(id: thread.id, to: nil) }
-                ForEach(chats.folders) { folder in
-                    Button(folder.name) { chats.moveThread(id: thread.id, to: folder.id) }
-                }
-            } label: {
-                Label("移到分组", systemImage: "folder")
-            }
-            Button(role: .destructive) {
-                chats.deleteThread(id: thread.id)
-            } label: {
-                Label("删除", systemImage: "trash")
-            }
-        }
-        .ybRow(bottom: isLast ? YBMetric.rowGap : 0)
     }
 
-    private func position(_ index: Int, _ count: Int) -> YBRowPosition {
-        if count <= 1 { return .only }
-        if index == 0 { return .first }
-        if index == count - 1 { return .last }
-        return .middle
+    /// 一行会话：整行可点进对话，行尾一个「…」是**不用手势**的入口
+    /// （移到分组、删除都在里面——长按不能是唯一的路，HIG 的 Gestures 页有明文）。
+    private func threadRow(_ thread: ChatThread, subtitle: String) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                path.append(thread.id)
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(thread.title)
+                        .font(.body)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+
+            Menu {
+                Menu {
+                    Button("不分组") { chats.moveThread(id: thread.id, to: nil) }
+                    ForEach(chats.folders) { folder in
+                        Button(folder.name) { chats.moveThread(id: thread.id, to: folder.id) }
+                    }
+                } label: {
+                    Label("移到分组", systemImage: "folder")
+                }
+                Button(role: .destructive) {
+                    chats.detachThread(id: thread.id)
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("「\(thread.title)」的更多操作")
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                chats.detachThread(id: thread.id)
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
     }
 
     /// 会话按最近更新时间分段
@@ -407,38 +329,42 @@ struct ChatFolderView: View {
         List {
             let list = chats.threads(inFolder: folderID)
             if list.isEmpty {
-                YBHint(text: "这个分组里还没有对话。在对话列表里长按一条，选「移到分组」。")
-                    .padding(.top, 12)
-                    .ybRow(horizontal: 0)
+                ContentUnavailableView {
+                    Label("这个分组还是空的", systemImage: "folder")
+                } description: {
+                    Text("在对话列表里左滑一条，或者点行尾的「…」，选「移到分组」。")
+                }
+                .listRowBackground(Color.clear)
             } else {
-                ForEach(list.indices, id: \.self) { index in
-                    let thread = list[index]
-                    YBRow(title: thread.title,
-                          subtitle: thread.updatedAt.formatted(date: .abbreviated, time: .shortened),
-                          position: position(index, list.count)) {
+                ForEach(list) { thread in
+                    Button {
                         path.append(thread.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(thread.title)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            Text(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .swipeActions {
                         Button(role: .destructive) {
-                            chats.deleteThread(id: thread.id)
+                            chats.detachThread(id: thread.id)
                         } label: {
                             Label("删除", systemImage: "trash")
                         }
                     }
-                    .ybRow(bottom: index == list.count - 1 ? YBMetric.rowGap : 0)
                 }
             }
         }
-        .ybPageList()
         .navigationTitle(chats.folderName(folderID))
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private func position(_ index: Int, _ count: Int) -> YBRowPosition {
-        if count <= 1 { return .only }
-        if index == 0 { return .first }
-        if index == count - 1 { return .last }
-        return .middle
     }
 }
 
