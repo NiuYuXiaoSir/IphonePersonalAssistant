@@ -3,8 +3,9 @@ import UIKit
 
 /// 设置页。
 ///
-/// 版式照元宝的设置页：居中的窄标题 + 一张张分组卡片，
-/// 能点的行是蓝字，危险动作是红字，说明一律放在分组下面那行灰字里。
+/// 用系统 Form：分组卡片、行、页脚说明全是系统给的，不再自己画。
+/// 唯一自己定的是品牌蓝（`Assets.xcassets/AccentColor`），通过 `.tint` 全局生效，
+/// 页面里不写任何颜色值——深浅色、增强对比度都由系统负责。
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsStore
     @ObservedObject private var balance = BalanceStore.shared
@@ -16,12 +17,10 @@ struct SettingsView: View {
                 balanceSection
                 credentialSection
                 testSection
+                systemSection
             }
-            .scrollContentBackground(.hidden)
-            .background(YBColor.bg)
-            .listRowBackground(YBColor.surface)
-            // 这一页有三个输入框（地址、模型名、密钥），以前只能靠「点别处」碰运气收键盘：
-            // 往下滑一下收掉，右上角也给一个明确的按钮
+            // 这一页有三个输入框（地址、模型名、密钥），往下滑一下收掉，
+            // 右上角也给一个明确的按钮
             .scrollDismissesKeyboard(.immediately)
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -37,48 +36,6 @@ struct SettingsView: View {
     private func hideKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                         to: nil, from: nil, for: nil)
-    }
-
-    // MARK: - 余额 / 用量
-
-    private var balanceSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: balance.chipIcon)
-                        .font(.system(size: 15))
-                        .foregroundStyle(YBColor.textSecondary)
-                    Text(balance.report?.headline ?? "还没查到")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(balance.isLow ? YBColor.warning : Color.primary)
-                }
-                if let detail = balance.report?.detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if !balance.message.isEmpty {
-                    Text(balance.message)
-                        .font(.caption2)
-                        .foregroundStyle(balance.report == nil ? YBColor.warning : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(.vertical, 2)
-
-            Button {
-                balance.refresh(settings: settings)
-            } label: {
-                Text(balance.isRefreshing ? "查询中…" : "刷新余额")
-                    .foregroundStyle(balance.isRefreshing ? YBColor.textTertiary : YBColor.accent)
-            }
-            .disabled(balance.isRefreshing)
-        } header: {
-            Text("余额与用量")
-        } footer: {
-            Text("DeepSeek 官方查 /user/balance（金额 + 赠送），OpenCode Go 查 /zen/go/v1/usage（5 小时 / 本周 / 本月三个窗口的用量）。打开会产生 token 的页面时会自动查一次，两分钟内不重复请求；用完一次模型之后再查一次，所以数字跟着花费走。请求只发给你自己填的那个地址，密钥不写进日志。")
-        }
     }
 
     // MARK: - 模型服务
@@ -113,7 +70,7 @@ struct SettingsView: View {
                 modelChips
                 if !settings.modelListResult.isEmpty {
                     Text(settings.modelListResult)
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -131,7 +88,7 @@ struct SettingsView: View {
         return Group {
             if models.isEmpty {
                 Text("点「拉取模型列表」看看这个服务有哪些模型，再填到上面。")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -148,19 +105,53 @@ struct SettingsView: View {
 
     private func modelChip(_ name: String) -> some View {
         let selected = settings.model == name
-        return Button {
+        return Button(name) {
             settings.model = name
             settings.persist()
-        } label: {
-            Text(name)
-                .font(.system(size: 13))
-                .foregroundStyle(selected ? YBColor.accent : Color.primary)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(selected ? YBColor.accent.opacity(0.16) : YBColor.surfaceHi,
-                            in: Capsule())
         }
-        .buttonStyle(YBPressStyle())
+        .font(.footnote)
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .tint(selected ? Color.accentColor : Color.secondary)
+    }
+
+    // MARK: - 余额 / 用量
+
+    private var balanceSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: balance.chipIcon)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(balance.report?.headline ?? "还没查到")
+                        .font(.headline)
+                        .foregroundStyle(balance.isLow ? Color.orange : Color.primary)
+                }
+                if let detail = balance.report?.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !balance.message.isEmpty {
+                    Text(balance.message)
+                        .font(.caption)
+                        .foregroundStyle(balance.report == nil ? Color.orange : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.vertical, 2)
+
+            Button(balance.isRefreshing ? "查询中…" : "刷新余额") {
+                balance.refresh(settings: settings)
+            }
+            .disabled(balance.isRefreshing)
+        } header: {
+            Text("余额与用量")
+        } footer: {
+            Text("DeepSeek 官方查 /user/balance（金额 + 赠送），OpenCode Go 查 /zen/go/v1/usage（5 小时 / 本周 / 本月三个窗口的用量）。打开会产生 token 的页面时会自动查一次，两分钟内不重复请求；用完一次模型之后再查一次，所以数字跟着花费走。请求只发给你自己填的那个地址，密钥不写进日志。")
+        }
     }
 
     // MARK: - 凭证
@@ -173,20 +164,14 @@ struct SettingsView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
 
-            Button {
+            Button("保存密钥") {
                 settings.saveAPIKey()
-            } label: {
-                Text("保存密钥")
-                    .foregroundStyle(settings.apiKeyInput.isEmpty ? YBColor.textTertiary : YBColor.accent)
             }
             .disabled(settings.apiKeyInput.isEmpty)
 
             if settings.hasKey {
-                Button(role: .destructive) {
+                Button("清除「\(settings.preset.displayName)」的密钥", role: .destructive) {
                     settings.clearAPIKey()
-                } label: {
-                    Text("清除「\(settings.preset.displayName)」的密钥")
-                        .foregroundStyle(YBColor.danger)
                 }
             }
         } header: {
@@ -200,11 +185,8 @@ struct SettingsView: View {
 
     private var testSection: some View {
         Section {
-            Button {
+            Button(settings.isTesting ? "测试中…" : "测试连接") {
                 settings.testConnection()
-            } label: {
-                Text(settings.isTesting ? "测试中…" : "测试连接")
-                    .foregroundStyle(settings.isTesting ? YBColor.textTertiary : YBColor.accent)
             }
             .disabled(settings.isTesting)
 
@@ -217,6 +199,24 @@ struct SettingsView: View {
             Text("连接测试")
         } footer: {
             Text("会真的向上面填的地址发一次请求。成功会显示模型的回复，失败会显示具体错误——包括服务端返回的原文，方便判断是地址填错了还是密钥不对。")
+        }
+    }
+
+    // MARK: - 系统设置
+
+    /// 权限被拒之后，唯一能改的地方在系统的设置里，从 App 里给个直达入口
+    private var systemSection: some View {
+        Section {
+            Button {
+                guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                UIApplication.shared.open(url)
+            } label: {
+                Label("打开系统设置", systemImage: "gear")
+            }
+        } header: {
+            Text("权限")
+        } footer: {
+            Text("麦克风、语音识别、相机、日历、提醒事项、通知的开关都在系统设置里。这些权限都是用到的时候才申请，拒绝了也能随时在这里改回来。")
         }
     }
 }

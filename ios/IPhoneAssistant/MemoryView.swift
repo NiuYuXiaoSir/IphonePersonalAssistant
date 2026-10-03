@@ -8,6 +8,8 @@ struct MemoryRoute: Hashable {}
 ///
 /// 上面是长期记忆（你是谁、在做什么、有什么偏好），下面是每天的流水（做了什么、打算做什么）。
 /// 这些内容会直接进模型的 prompt，所以记错了必须能删——错的东西留着会一直误导它。
+///
+/// 版式用系统 List（insetGrouped）：分组、行、页脚说明都是系统给的。
 struct MemoryView: View {
     @ObservedObject private var memory = MemoryStore.shared
 
@@ -15,16 +17,9 @@ struct MemoryView: View {
 
     var body: some View {
         List {
-            Section {
-                YBHint(text: "这些是助理记住的事，每轮对话都会挑相关的带上。它只记在手机上（assistant.sqlite3），不会同步到任何地方。")
-                    .padding(.top, 12)
-                    .ybRow(horizontal: 0)
-            }
-
             factsSection
             timelineSection
         }
-        .ybPageList()
         .navigationTitle("记忆")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -66,28 +61,27 @@ struct MemoryView: View {
     private var factsSection: some View {
         Section {
             if memory.facts.isEmpty {
-                YBHint(text: "还没有长期记忆。对话里说「老王是桥杆供应商」「我一般十点睡」这类话，它会记在这里。")
-                    .ybRow(horizontal: 0)
+                Text("还没有长期记忆。对话里说「老王是桥杆供应商」「我一般十点睡」这类话，它会记在这里。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } else {
-                ForEach(memory.facts.indices, id: \.self) { index in
-                    let fact = memory.facts[index]
-                    let last = index == memory.facts.count - 1
-                    YBRow(title: fact.content,
-                          subtitle: "\(fact.kind.label) · \(fact.updatedAt.formatted(date: .numeric, time: .omitted))",
-                          icon: fact.kind.symbol,
-                          position: position(index, memory.facts.count))
-                        .swipeActions {
-                            Button(role: .destructive) {
-                                memory.delete(fact: fact)
-                            } label: {
-                                Label("删除", systemImage: "trash")
-                            }
+                ForEach(memory.facts) { fact in
+                    logRow(icon: fact.kind.symbol,
+                           title: fact.content,
+                           subtitle: "\(fact.kind.label) · \(fact.updatedAt.formatted(date: .numeric, time: .omitted))")
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            memory.delete(fact: fact)
+                        } label: {
+                            Label("删除", systemImage: "trash")
                         }
-                        .ybRow(bottom: last ? YBMetric.rowGap : 0)
+                    }
                 }
             }
         } header: {
-            YBPinnedHeader("长期记忆（\(memory.facts.count)）")
+            Text("长期记忆（\(memory.facts.count)）")
+        } footer: {
+            Text("这些是助理记住的事，每轮对话都会挑相关的带上。它只记在手机上（assistant.sqlite3），不会同步到任何地方。")
         }
     }
 
@@ -97,41 +91,53 @@ struct MemoryView: View {
     private var timelineSection: some View {
         if memory.dayGroups.isEmpty {
             Section {
-                YBHint(text: "还没有流水。对话里说「今天去厂里看了桥杆」，或者在速记页记一条，都会按天记在这里。")
-                    .ybRow(horizontal: 0)
+                Text("还没有流水。对话里说「今天去厂里看了桥杆」，或者在速记页记一条，都会按天记在这里。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } header: {
-                YBPinnedHeader("每日流水")
+                Text("每日流水")
             }
         } else {
             ForEach(memory.dayGroups) { group in
                 Section {
-                    ForEach(group.logs.indices, id: \.self) { index in
-                        let log = group.logs[index]
-                        YBRow(title: log.content,
-                              subtitle: "\(log.kind.label) · \(log.at.formatted(date: .omitted, time: .shortened))",
-                              icon: log.kind.symbol,
-                              position: position(index, group.logs.count))
-                            .swipeActions {
-                                Button(role: .destructive) {
-                                    memory.delete(log: log)
-                                } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
+                    ForEach(group.logs) { log in
+                        logRow(icon: log.kind.symbol,
+                               title: log.content,
+                               subtitle: "\(log.kind.label) · \(log.at.formatted(date: .omitted, time: .shortened))")
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                memory.delete(log: log)
+                            } label: {
+                                Label("删除", systemImage: "trash")
                             }
-                            .ybRow(bottom: index == group.logs.count - 1 ? YBMetric.rowGap : 0)
+                        }
                     }
                 } header: {
-                    YBPinnedHeader(group.title)
+                    Text(group.title)
                 }
             }
         }
     }
 
-    private func position(_ index: Int, _ count: Int) -> YBRowPosition {
-        if count <= 1 { return .only }
-        if index == 0 { return .first }
-        if index == count - 1 { return .last }
-        return .middle
+    /// 一条记忆：图标 + 内容 + 「类型 · 时间」。
+    /// 用文本样式而不是写死字号，系统字号调大时能跟着长。
+    private func logRow(icon: String, title: String, subtitle: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: 22, alignment: .center)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

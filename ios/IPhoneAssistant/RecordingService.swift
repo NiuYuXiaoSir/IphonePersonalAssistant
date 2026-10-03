@@ -31,6 +31,8 @@ final class RecordingService: ObservableObject {
     @Published private(set) var segmentCount: Int = 0
     @Published private(set) var markerCount: Int = 0
     @Published private(set) var currentFileKB: Int = 0
+    /// 当前电平（0...1）。录音页拿它画电平表——这是「麦克风在收」的唯一直观证据。
+    @Published private(set) var level: Float = 0
     @Published private(set) var message: String = "准备就绪"
 
     /// 每完成一段就回调一次。调用方拿它做“边录边转”——
@@ -121,6 +123,7 @@ final class RecordingService: ObservableObject {
         timer = nil
         isRecording = false
         isWaitingForAudio = false
+        level = 0
         removeInterruptionObserver()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
@@ -174,6 +177,8 @@ final class RecordingService: ObservableObject {
         ]
         do {
             let rec = try AVAudioRecorder(url: url, settings: settings)
+            // 开电平计量，供录音页画电平表
+            rec.isMeteringEnabled = true
             guard rec.record() else {
                 message = "第 \(index + 1) 段录音启动失败"
                 AppLog.error("Rec", message)
@@ -232,6 +237,7 @@ final class RecordingService: ObservableObject {
             lostSeconds = lostBefore + Date().timeIntervalSince(gap)
         }
         updateCurrentFileSize()
+        updateLevel()
 
         if let rec = recorder {
             if rec.isRecording {
@@ -266,6 +272,20 @@ final class RecordingService: ObservableObject {
            let bytes = attrs[.size] as? Int {
             currentFileKB = bytes / 1024
         }
+    }
+
+    /// 电平。dB 到 0...1：-50 dB 以下算静音，0 dB 算满格。
+    private func updateLevel() {
+        guard let rec = recorder, rec.isRecording else {
+            if level != 0 { level = 0 }
+            return
+        }
+        rec.updateMeters()
+        let power = rec.averagePower(forChannel: 0)
+        guard power.isFinite else { return }
+        let floor: Float = -50
+        let clamped = max(floor, min(0, power))
+        level = (clamped - floor) / -floor
     }
 
     // MARK: - 音频会话与中断

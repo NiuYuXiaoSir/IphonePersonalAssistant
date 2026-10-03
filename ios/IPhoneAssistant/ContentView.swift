@@ -3,38 +3,60 @@ import UIKit
 
 /// 诊断页：原本的 E1 探针界面。特意保留，因为它还要继续用——
 /// 7 天续签后的数据保留验证、后台录音复测、App Groups 复测都依赖它。
+///
+/// 版式用系统 Form。这一页之后会从页签降级到「我的 → 高级」，内容一项不少。
 struct DiagnosticsView: View {
     @StateObject private var store = ProbeStore()
     @State private var logPreview = ""
 
     var body: some View {
         NavigationStack {
-            List {
+            Form {
+                // 出问题时第一件事是把报告复制走，所以放在最前面
+                reportSection
                 installSection
                 signingSection
                 recordingSection
                 systemDataSection
                 notificationSection
                 loggerSection
-                reportSection
             }
-            .scrollContentBackground(.hidden)
-            .background(YBColor.bg)
-            .listRowBackground(YBColor.surface)
             .navigationTitle("诊断")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 store.refreshInstallInfo()
                 logPreview = AppLog.exportText(limitBytes: 3000)
             }
-            .alert("提示", isPresented: Binding(
-                get: { !store.toast.isEmpty },
-                set: { if !$0 { store.toast = "" } }
-            )) {
-                Button("知道了") { store.toast = "" }
-            } message: {
-                Text(store.toast)
+            .toast($store.toast)
+        }
+    }
+
+    // MARK: - 报告
+
+    private var reportSection: some View {
+        Section {
+            Button {
+                store.copyReport()
+            } label: {
+                Label("复制报告到剪贴板", systemImage: "doc.on.doc")
             }
+            Button {
+                store.saveReportToFiles()
+            } label: {
+                Label("保存报告到「文件」", systemImage: "folder")
+            }
+            if !store.reportSavedPath.isEmpty {
+                Text("已保存：\(store.reportSavedPath)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Text(store.buildReport())
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+        } header: {
+            Text("⓪ 探针报告")
+        } footer: {
+            Text("把报告贴给我，我就能判断这条链路能不能支撑正式开发。")
         }
     }
 
@@ -45,11 +67,10 @@ struct DiagnosticsView: View {
             LabeledContent("首次安装", value: store.firstLaunch.formatted(date: .abbreviated, time: .shortened))
             LabeledContent("已安装", value: "\(store.installDays) 天")
             LabeledContent("累计启动", value: "\(store.launchCount) 次")
-            Text("「累计启动」是判断数据是否保留的关键：等免费签名过期、用同一个苹果账号重新签名安装之后，如果这个数字接着往上涨（而不是变回 1），说明覆盖安装不会清数据。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         } header: {
             Text("① 装机链路")
+        } footer: {
+            Text("「累计启动」是判断数据是否保留的关键：等免费签名过期、用同一个苹果账号重新签名安装之后，如果这个数字接着往上涨（而不是变回 1），说明覆盖安装不会清数据。")
         }
     }
 
@@ -70,15 +91,12 @@ struct DiagnosticsView: View {
             Button {
                 store.toggleRecording()
             } label: {
-                HStack {
-                    Image(systemName: store.isRecording ? "stop.circle.fill" : "record.circle")
-                    Text(store.isRecording
-                         ? "停止录音（已录 \(Int(store.recordSeconds)) 秒）"
-                         : "开始录音测试")
-                    Spacer()
-                }
-                .foregroundStyle(store.isRecording ? YBColor.danger : YBColor.accent)
+                Label(store.isRecording
+                      ? "停止录音（已录 \(Int(store.recordSeconds)) 秒）"
+                      : "开始录音测试",
+                      systemImage: store.isRecording ? "stop.circle.fill" : "record.circle")
             }
+            .tint(store.isRecording ? Color.red : Color.accentColor)
 
             Text(store.recordStatus)
                 .font(.footnote)
@@ -153,27 +171,6 @@ struct DiagnosticsView: View {
             Text("⑥ 运行日志")
         } footer: {
             Text("这台手机上装不了开发工具，出问题时这段日志就是唯一的线索。把它发给我就行。")
-        }
-    }
-
-    // MARK: - 报告
-
-    private var reportSection: some View {
-        Section {
-            Button("复制报告到剪贴板") { store.copyReport() }
-            Button("保存报告到「文件」") { store.saveReportToFiles() }
-            if !store.reportSavedPath.isEmpty {
-                Text("已保存：\(store.reportSavedPath)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Text(store.buildReport())
-                .font(.system(.caption2, design: .monospaced))
-                .textSelection(.enabled)
-        } header: {
-            Text("⑦ 探针报告")
-        } footer: {
-            Text("把报告贴给我，我就能判断这条链路能不能支撑正式开发。")
         }
     }
 }

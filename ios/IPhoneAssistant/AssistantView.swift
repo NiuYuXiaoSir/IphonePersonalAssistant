@@ -6,6 +6,8 @@ import UIKit
 /// 这一页不经过 AI，也不该出现「解析」这种词——自己清楚要记什么的时候，
 /// 一项项填完保存，比说一句话再回头改更快也更准。
 /// 想让助理从一段话里替你拆出来，去「对话」页。
+///
+/// 版式用系统 Form：分段选择、开关、日期选择、行、页脚说明都是系统给的。
 struct AssistantView: View {
 
     @ObservedObject private var noteStore = NoteStore.shared
@@ -31,7 +33,7 @@ struct AssistantView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            Form {
                 kindSection
                 contentSection
                 if kind == .todo { todoTimeSection }
@@ -39,13 +41,10 @@ struct AssistantView: View {
                 if kind == .notification { noticeTimeSection }
                 notesFieldSection
                 saveSection
-                if hasNotes { savedNotesSection }
                 if hasPendingNotices { pendingNoticeSection }
+                if hasNotes { savedNotesSection }
             }
             .scrollDismissesKeyboard(.immediately)
-            .scrollContentBackground(.hidden)
-            .background(YBColor.bg)
-            .listRowBackground(YBColor.surface)
             .navigationTitle("速记")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -65,14 +64,7 @@ struct AssistantView: View {
             }
             .onDisappear { if liveASR.isRunning { liveASR.stop() } }
             .onAppear { Task { await refreshNotices() } }
-            .alert("提示", isPresented: Binding(
-                get: { !toast.isEmpty },
-                set: { if !$0 { toast = "" } }
-            )) {
-                Button("知道了") { toast = "" }
-            } message: {
-                Text(toast)
-            }
+            .toast($toast)
         }
     }
 
@@ -117,25 +109,25 @@ struct AssistantView: View {
             HStack(alignment: .top, spacing: 8) {
                 TextField(titlePlaceholder, text: $title, axis: .vertical)
                     .lineLimit(1...4)
-                    .font(.body)
                 Button {
                     toggleVoice()
                 } label: {
                     Image(systemName: liveASR.isRunning ? "waveform.circle.fill" : "mic.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(liveASR.isRunning ? YBColor.danger : YBColor.accent)
+                        .font(.title3)
+                        .foregroundStyle(liveASR.isRunning ? Color.red : Color.accentColor)
                         .symbolEffect(.variableColor, isActive: liveASR.isRunning)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(liveASR.isRunning ? "停止语音输入" : "开始语音输入")
             }
             if liveASR.isRunning {
                 Label("在听…说完点一下话筒停止", systemImage: "waveform")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             } else if !liveASR.message.isEmpty && liveASR.message != "已停止" {
                 Text(liveASR.message)
-                    .font(.caption2)
-                    .foregroundStyle(YBColor.warning)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         } header: {
             Text("内容")
@@ -188,7 +180,6 @@ struct AssistantView: View {
         Section {
             TextField(bodyPlaceholder, text: $notes, axis: .vertical)
                 .lineLimit(2...6)
-                .font(.footnote)
         } header: {
             Text(bodyHeader)
         }
@@ -201,20 +192,18 @@ struct AssistantView: View {
             } label: {
                 HStack {
                     Spacer()
-                    if busy { ProgressView().controlSize(.small) }
+                    if busy { ProgressView() }
                     Text(busy ? "保存中…" : saveButtonTitle)
-                        .font(YBFont.actionLabel)
-                        .foregroundStyle(YBColor.accent)
+                        .font(.headline)
                     Spacer()
                 }
-                .padding(.vertical, 6)
             }
             .disabled(busy)
 
             if !message.isEmpty {
                 Label(message, systemImage: messageIsError ? "exclamationmark.triangle" : "checkmark.circle")
                     .font(.footnote)
-                    .foregroundStyle(messageIsError ? YBColor.warning : YBColor.success)
+                    .foregroundStyle(messageIsError ? Color.orange : Color.green)
             }
         } footer: {
             Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。这一页不联网，没配密钥也能用。")
@@ -261,12 +250,7 @@ struct AssistantView: View {
                 }
             }
         } header: {
-            HStack {
-                Text("已安排的通知（\(pendingNotices.count) 条）")
-                Spacer()
-                Button("刷新") { Task { await refreshNotices() } }
-                    .font(.caption)
-            }
+            Text("已安排的通知（\(pendingNotices.count) 条）")
         } footer: {
             Text("这些通知还没弹出来，左滑可以取消。它们只在手机的通知队列里，不在提醒事项里。")
         }
@@ -301,7 +285,7 @@ struct AssistantView: View {
                     } label: {
                         Label("复制", systemImage: "doc.on.doc")
                     }
-                    .tint(.blue)
+                    .tint(Color.accentColor)
                 }
             }
         } header: {
@@ -381,8 +365,8 @@ struct AssistantView: View {
                 }
                 await MainActor.run {
                     self.busy = false
-                    self.message = done
-                    self.messageIsError = false
+                    self.message = ""
+                    self.toast = done
                     self.title = ""
                     self.notes = ""
                     AppLog.info("QuickAdd", done)
