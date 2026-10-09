@@ -41,14 +41,23 @@ struct RootView: View {
         .onChange(of: router.selectedTab) { _, _ in
             router.rememberTab()
         }
+        .onChange(of: router.showSchedule) { _, show in
+            // 「安排」在今日页的导航栈里，所以这个请求先落脚到页签上
+            if show { router.selectedTab = .today }
+        }
         .onChange(of: scenePhase) { _, phase in
             // 退到后台就把撤销窗口收掉：不然 App 在窗口里被杀掉，
             // 撤下的记录会和音频文件对不上（会议那边会被当成「意外中断」又找回来）
             if phase != .active {
                 meetings.commitDetach()
                 chats.commitDetachThread()
+            } else {
+                // 回到前台重排一次通知：系统的待弹通知有条数上限，
+                // 前面弹完之后，排在后面的那些要补上
+                ItemStore.shared.rescheduleNotifications()
             }
         }
+        .onAppear { ItemStore.shared.rescheduleNotifications() }
     }
 }
 

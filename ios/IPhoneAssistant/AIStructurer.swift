@@ -8,7 +8,7 @@ struct ParsedItem: Identifiable, Codable {
         case todo
         case event
         case note
-        /// 短时、一次性的提醒，弹完就完，不写进提醒事项
+        /// 短时、一次性的提醒：到点响一下，不用回来打勾
         case notification
 
         var label: String {
@@ -20,13 +20,14 @@ struct ParsedItem: Identifiable, Codable {
             }
         }
 
-        /// 这条东西最终会落到哪儿
-        var destination: String {
+        /// 这条东西会怎么提醒你。四类都存本机，区别只在「响不响、要不要打勾」——
+        /// 卡片右侧那枚小标签显示的就是它，点开可以改类型。
+        var behavior: String {
             switch self {
-            case .todo:         return "提醒事项"
-            case .event:        return "日历"
-            case .note:         return "备忘"
-            case .notification: return "通知"
+            case .todo:         return "要打勾"
+            case .event:        return "占时段"
+            case .note:         return "不提醒"
+            case .notification: return "响一下"
             }
         }
 
@@ -131,10 +132,10 @@ enum AIStructurer {
     }
 
     规则：
-    1. kind 决定这条东西最后存到哪儿，判错了用户就找不到它，所以按下面的分工来选：
-       - notification → 只是在某个时刻响一下，不写进提醒事项。用在「短时间内的、一次性的提醒」：几分钟到几小时后弹一次就够，不需要事后回来打勾。像「10 分钟后提醒我给供应商打电话」「一小时后叫我」「下午三点提醒我打个电话」。这类**必须**有明确时刻，没有时刻的不要判成 notification。
-       - todo → 写进提醒事项。需要跟踪完成状态的事，或者时间比较远的事（「这周五之前把报价单发给采购」）。没写时间的也归这里。
-       - event → 写进日历。要占用一段时间的事（会议、约人、饭局、出差），有开始时间和时长。
+    1. 四类东西都存进这个 App 自己的清单，区别只在**提不提醒、要不要打勾**，判错了用户就找不到它，所以按下面的分工来选：
+       - notification → 到点响一下就完，不用回来打勾。用在「短时间内的、一次性的提醒」：几分钟到几小时后弹一次就够。像「10 分钟后提醒我给供应商打电话」「一小时后叫我」「下午三点提醒我打个电话」。这类**必须**有明确时刻，没有时刻的不要判成 notification。
+       - todo → 需要跟踪完成状态的事，或者时间比较远的事（「这周五之前把报价单发给采购」）。有时间就到时候提醒；没写时间的也归这里（那就是一张要打勾的清单）。
+       - event → 要占用一段时间的事（会议、约人、饭局、出差），有开始时间和时长，到点提醒。
        - note → 只是信息，不需要行动（账号、地址、名言、别人的话）。
        拿不准时问自己：用户事后会回来打勾吗？会的话是 todo；只是想让它在某刻响一下，就是 notification。
        照片（白板、便签、纸质笔记）里的内容通常是要做的事，除非明确只是信息，否则判成 todo，不要判成 note——用户拍照基本是想让自己记得去做。

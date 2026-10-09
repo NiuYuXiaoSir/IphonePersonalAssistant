@@ -150,7 +150,7 @@ final class SQLiteDatabase {
 
 /// 全局唯一的数据库。
 ///
-/// 建表放在这里一次性做完：对话（三张表）、长期记忆、每日流水。
+/// 建表放在这里一次性做完：对话（三张表）、安排（条目）、附件、长期记忆、每日流水。
 /// 都用 IF NOT EXISTS，所以升级 App 之后再进来只是补上缺的表，不会动已有数据。
 enum AppDatabase {
 
@@ -195,6 +195,41 @@ enum AppDatabase {
           updated_at REAL NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_content ON memories(content);
+        CREATE TABLE IF NOT EXISTS items (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          notes TEXT NOT NULL DEFAULT '',
+          due_at REAL,
+          duration_minutes INTEGER NOT NULL DEFAULT 0,
+          priority TEXT NOT NULL DEFAULT 'normal',
+          remind_before INTEGER NOT NULL DEFAULT 0,
+          is_done INTEGER NOT NULL DEFAULT 0,
+          sort_index REAL NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT '',
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_items_due ON items(due_at);
+        CREATE TABLE IF NOT EXISTS media (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          entry_id TEXT NOT NULL DEFAULT '',
+          thread_id TEXT NOT NULL DEFAULT '',
+          pixel_width INTEGER NOT NULL DEFAULT 0,
+          pixel_height INTEGER NOT NULL DEFAULT 0,
+          duration_seconds REAL NOT NULL DEFAULT 0,
+          bytes INTEGER NOT NULL DEFAULT 0,
+          created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_media_entry ON media(entry_id);
+        CREATE TABLE IF NOT EXISTS meetings (
+          id TEXT PRIMARY KEY,
+          started_at REAL NOT NULL,
+          payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_meetings_started ON meetings(started_at);
         CREATE TABLE IF NOT EXISTS timeline (
           id TEXT PRIMARY KEY,
           day TEXT NOT NULL,

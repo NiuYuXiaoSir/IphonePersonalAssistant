@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 /// 长按图标弹出的快捷菜单项。
 /// rawValue 必须和 project.yml 里 UIApplicationShortcutItemType 写的一模一样，
@@ -34,6 +35,9 @@ final class AppRouter: ObservableObject {
     @Published var pending: AppShortcut?
     /// 「＋」速记面板。任何页签都能把它叫起来，所以放在这里而不是某个页面里。
     @Published var showQuickAdd = false
+    /// 「去看安排」。对话里存下东西之后要能一步跳到那张清单，而它在「今日」的导航栈里，
+    /// 所以这里只放个请求，由今日页接住并推进去。
+    @Published var showSchedule = false
 
     private init() {
         let saved = UserDefaults.standard.string(forKey: Self.tabKey)
@@ -61,13 +65,17 @@ final class AppRouter: ObservableObject {
     }
 }
 
-/// 只有接管快捷菜单这一件事需要 AppDelegate，
+/// 只有接管快捷菜单和通知按钮这两件事需要 AppDelegate，
 /// SwiftUI 里用 @UIApplicationDelegateAdaptor 挂上即可。
-final class AppDelegate: NSObject, UIApplicationDelegate {
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
 
     /// App 没在运行时走这里：快捷项放在 launchOptions 里，performActionFor 不会被调用
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // 通知代理和分类都必须在启动阶段就位，否则通知上的「完成 / 延后」不会出现
+        UNUserNotificationCenter.current().delegate = self
+        NotificationService.registerCategories()
+
         if let item = launchOptions?[.shortcutItem] as? UIApplicationShortcutItem,
            let shortcut = AppShortcut(rawValue: item.type) {
             AppLog.info("Shortcut", "冷启动带快捷项：\(shortcut.rawValue)")
@@ -87,5 +95,36 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         AppLog.info("Shortcut", "快捷项：\(shortcut.rawValue)")
         AppRouter.shared.handle(shortcut)
         completionHandler(true)
+    }
+
+    /// 通知上的按钮。HIG 的 Notifications 页：让通知自己把事办完，
+    /// 别让用户为了打个勾专门打开 App。
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let identifier = response.notification.request.identifier
+        let prefix = ItemStore.notificationPrefix
+        guard identifier.hasPrefix(prefix) else {
+            completionHandler()
+            return
+        }
+        let itemID = String(identifier.dropFirst(prefix.count))
+        let action = response.actionIdentifier
+        AppLog.info("Notice", "通知动作 \(action)，条目 \(itemID)")
+
+        // 回调不在主线程，而 ItemStore 的读写都在主线程上
+        DispatchQueue.main.async {
+            switch action {
+            case NotificationService.Action.complete:
+                ItemStore.shared.setDone(id: itemID, done: true)
+            case NotificationService.Action.snooze:
+                ItemStore.shared.snooze(id: itemID, minutes: 10)
+            default:
+                // 点通知本体：回「今日」，那条就在「安排」里
+                AppRouter.shared.selectedTab = .today
+                AppRouter.shared.showSchedule = true
+            }
+            completionHandler()
+        }
     }
 }

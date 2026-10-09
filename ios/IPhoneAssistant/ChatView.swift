@@ -114,7 +114,7 @@ struct ChatView: View {
             Button("清空", role: .destructive) { chats.clearThread(id: threadID) }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("这段对话的消息和图片都会被删掉，会话本身留着。已经写进提醒事项、日历、备忘的东西不受影响。")
+            Text("这段对话的消息和图片都会被删掉，会话本身留着。已经存下的条目和备忘不受影响——它们在本机的数据库里，去「今日 → 安排」还能看到。")
         }
         .toast($toast)
         .sensoryFeedback(.success, trigger: hapticSuccess) { _, _ in settings.hapticsEnabled }
@@ -167,7 +167,7 @@ struct ChatView: View {
                     .font(.title.bold())
                     .multilineTextAlignment(.center)
 
-                Text("说一句就把待办、日程、备忘、提醒建出来，\n核对一下直接进提醒事项和日历。\n它记得你说过的事——做了什么、要做什么都记着。")
+                Text("说一句就把待办、日程、备忘、提醒记下来，\n到点它会弹通知提醒你。\n它记得你说过的事——做了什么、要做什么都记着。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -490,17 +490,20 @@ struct ChatView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // 写进的是「AI助理」这个列表/日历，不是默认那个。
-            // 用户去提醒事项里翻不到是常事，给个直达入口省得到处找。
+            // 条目都存在 App 自己这里，写完之后去哪儿看要说明白
             if !entry.writtenKinds.isEmpty {
-                HStack(spacing: 8) {
-                    if entry.writtenKinds.contains("todo") {
-                        openAppButton("打开提醒事项", scheme: "x-apple-reminder://")
-                    }
-                    if entry.writtenKinds.contains("event") {
-                        openAppButton("打开日历", scheme: "calshow://")
+                Button {
+                    AppRouter.shared.showSchedule = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("去看安排").font(.footnote)
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.caption2)
                     }
                 }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
             }
         }
         .padding(12)
@@ -644,9 +647,12 @@ struct ChatView: View {
                                 Image(systemName: "xmark.circle.fill")
                                     .font(.body)
                                     .foregroundStyle(.white, .black.opacity(0.5))
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .padding(3)
+                            .padding(-6)
+                            .accessibilityLabel("移除这张照片")
                         }
                 }
             }
@@ -674,6 +680,7 @@ struct ChatView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("更多操作")
             }
         }
     }
@@ -727,22 +734,6 @@ struct ChatView: View {
             get: { entry(id)?.items ?? [] },
             set: { newValue in updateEntry(id) { $0.items = newValue } }
         )
-    }
-
-    private func openAppButton(_ title: String, scheme: String) -> some View {
-        Button {
-            guard let url = URL(string: scheme) else { return }
-            UIApplication.shared.open(url, options: [:], completionHandler: nil)
-        } label: {
-            HStack(spacing: 4) {
-                Text(title).font(.footnote)
-                Image(systemName: "arrow.up.forward.app")
-                    .font(.caption2)
-            }
-        }
-        .buttonStyle(.bordered)
-        .buttonBorderShape(.capsule)
-        .controlSize(.small)
     }
 
     private func openCamera() {
@@ -929,64 +920,42 @@ struct ChatView: View {
             return
         }
 
-        // 先按目标分好组：写完之后要能明确说出「哪几条去了哪里」，
-        // 不然用户回到提醒事项里找不到东西，也没法判断是没写进去还是看错了列表。
-        let selectedTodos = selected.filter { $0.kind == .todo }
-        let selectedEvents = selected.filter { $0.kind == .event }
-        let selectedNotes = selected.filter { $0.kind == .note }
-        let selectedNotices = selected.filter { $0.kind == .notification }
-        AppLog.info("Chat", "开始写入：待办 \(selectedTodos.count)、日程 \(selectedEvents.count)、备忘 \(selectedNotes.count)、通知 \(selectedNotices.count)")
+        let counts = Dictionary(grouping: selected, by: { $0.kind })
+            .map { "\($0.key.label) \($0.value.count)" }
+            .sorted()
+            .joined(separator: "、")
+        AppLog.info("Chat", "开始存下：\(counts)")
 
         updateEntry(id) { $0.busy = true }
 
-        Task {
-            let result = await SystemWriter.writeAll(selected)
-            await MainActor.run {
-                var summary: [String] = []
-                if !selectedTodos.isEmpty { summary.append("提醒事项 \(selectedTodos.count) 条") }
-                if !selectedEvents.isEmpty { summary.append("日历 \(selectedEvents.count) 条") }
-                if !selectedNotices.isEmpty { summary.append("通知 \(selectedNotices.count) 条") }
-                if !selectedNotes.isEmpty { summary.append("备忘 \(selectedNotes.count) 条") }
-                AppLog.info("Chat", "写入结束：成功 \(result.succeeded.count)，失败 \(result.failed.count)")
+        // 存的是本机数据库里的一行，不再是别的 App——写库是同步的、毫秒级，
+        // 所以不需要再起一个 Task 等系统接口（也就没有「权限被拒」这类失败）
+        let result = ItemWriter.saveAll(selected, source: threadID)
+        AppLog.info("Chat", "存下结束：成功 \(result.succeeded.count)，失败 \(result.failed.count)")
 
-                updateEntry(id) { entry in
-                    entry.busy = false
-                    entry.items = nil
-                    entry.writtenKinds = selected.map { $0.kind.rawValue }
-                    var lines: [String] = []
-                    if !result.succeeded.isEmpty {
-                        lines.append("已写入：" + summary.joined(separator: "、"))
-                        lines.append(contentsOf: result.succeeded.map { "· " + $0 })
-                    }
-                    if !result.failed.isEmpty {
-                        lines.append("失败 \(result.failed.count) 条：")
-                        lines.append(contentsOf: result.failed.map { "· " + $0 })
-                    }
-                    entry.result = lines.joined(separator: "\n")
+        updateEntry(id) { entry in
+            entry.busy = false
+            entry.items = nil
+            entry.writtenKinds = selected.map { $0.kind.rawValue }
+            var lines: [String] = []
+            if !result.succeeded.isEmpty {
+                lines.append("已存下：")
+                lines.append(contentsOf: result.succeeded.map { "· " + $0 })
+            }
+            if !result.failed.isEmpty {
+                lines.append("这 \(result.failed.count) 条没存下：")
+                lines.append(contentsOf: result.failed.map { "· " + $0 })
+            }
+            entry.result = lines.joined(separator: "\n")
 
-                    if result.failed.isEmpty {
-                        hapticSuccess += 1
-                        var text = "已写入 " + summary.joined(separator: "、") + "。"
-                        if !selectedTodos.isEmpty {
-                            text += "待办在提醒事项的「\(SystemWriter.reminderListName)」列表里。"
-                        }
-                        if !selectedEvents.isEmpty {
-                            text += "日程在日历的「\(SystemWriter.calendarName)」里。"
-                        }
-                        if !selectedNotices.isEmpty {
-                            text += "通知到点会弹出来，不用它了可以在「速记」页取消。"
-                        }
-                        if !selectedNotes.isEmpty {
-                            text += "备忘存在 App 里，在「速记」页能看到。"
-                        }
-                        entry.text = text
-                    } else {
-                        entry.text = "写入完成：成功 \(result.succeeded.count) 条，失败 \(result.failed.count) 条。"
-                    }
-                }
-                chats.saveNow()
+            if result.failed.isEmpty {
+                hapticSuccess += 1
+                entry.text = ItemWriter.summary(for: selected)
+            } else {
+                entry.text = "存下 \(result.succeeded.count) 条，\(result.failed.count) 条没成。"
             }
         }
+        chats.saveNow()
     }
 
     // MARK: - 日期分隔
@@ -1033,10 +1002,12 @@ private struct ItemsCard: View {
                 Image(systemName: item.wrappedValue.include ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(item.wrappedValue.include ? Color.accentColor : Color.secondary)
+                    // 圈本身只有 20 pt 上下，热区按 HIG 补到 44×44
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.top, 1)
-            .accessibilityLabel(item.wrappedValue.include ? "不写入这条" : "写入这条")
+            .accessibilityLabel(item.wrappedValue.include ? "不存这条" : "存这条")
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
@@ -1046,7 +1017,7 @@ private struct ItemsCard: View {
                     TextField("标题", text: item.title, axis: .vertical)
                         .font(.body.weight(.medium))
                         .lineLimit(1...3)
-                    destinationMenu(item)
+                    kindMenu(item)
                 }
 
                 HStack(spacing: 8) {
@@ -1078,34 +1049,35 @@ private struct ItemsCard: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 4)
     }
 
-    /// 这一条会存到哪儿——顺手也能改。
+    /// 这一条会怎么提醒你——顺手也能改类型。
     ///
-    /// 模型把照片里的东西判成「备忘」是常见的事，而备忘不会进提醒事项。
+    /// 模型把照片里的东西判成「备忘」是常见的事，而备忘不提醒。
     /// 与其让用户回到对话里重新说一遍，不如在这里点一下就改过去。
-    private func destinationMenu(_ item: Binding<ParsedItem>) -> some View {
+    private func kindMenu(_ item: Binding<ParsedItem>) -> some View {
         Menu {
             ForEach(ParsedItem.Kind.allCases, id: \.self) { candidate in
                 Button {
                     item.wrappedValue.kind = candidate
                 } label: {
-                    Label("\(candidate.label) → \(destination(of: candidate))", systemImage: candidate.symbol)
+                    Label("\(candidate.label)（\(candidate.behavior)）", systemImage: candidate.symbol)
                 }
             }
         } label: {
             HStack(spacing: 3) {
-                Text(destination(of: item.wrappedValue.kind))
+                Text(item.wrappedValue.kind.behavior)
                     .font(.caption2)
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8))
+                    .font(.caption2)
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Color.accentColor.opacity(0.15), in: Capsule())
             .foregroundStyle(Color.accentColor)
         }
+        .accessibilityLabel("这条怎么提醒：\(item.wrappedValue.kind.behavior)，点按改类型")
     }
 
     private var footer: some View {
@@ -1144,19 +1116,13 @@ private struct ItemsCard: View {
         !items.isEmpty && items.allSatisfy { $0.include }
     }
 
-    /// 按钮上直接说清这批东西会落到哪儿
+    /// 按钮上直接说清这批东西存几条、会不会响
     private var writeTitle: String {
-        if busy { return "写入中…" }
+        if busy { return "存下中…" }
         let selected = items.filter { $0.include }
-        guard !selected.isEmpty else { return "写入系统" }
-        let kinds = Set(selected.map { $0.kind })
-        if kinds.count == 1, let only = kinds.first {
-            return "存入\(destination(of: only))（\(selected.count) 条）"
-        }
-        return "写入系统（\(selected.count) 条）"
+        guard !selected.isEmpty else { return "存下来" }
+        return "存下（\(selected.count) 条）"
     }
-
-    private func destination(of kind: ParsedItem.Kind) -> String { kind.destination }
 }
 
 // MARK: - 图片压缩

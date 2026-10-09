@@ -18,9 +18,9 @@ struct MeetingSummary {
     var summaryText: String = ""
     var topics: [Topic] = []
     var decisions: [String] = []
-    /// 拆成待办，可直接走 SystemWriter 写进提醒事项
+    /// 拆成待办，可直接走 ItemWriter 存进本机
     var actionItems: [ParsedItem] = []
-    /// 拆成日程，可直接走 SystemWriter 写进日历
+    /// 拆成日程，可直接走 ItemWriter 存进本机
     var events: [ParsedItem] = []
     var keyPoints: [String] = []
     var unresolved: [String] = []

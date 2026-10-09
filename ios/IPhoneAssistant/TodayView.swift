@@ -4,19 +4,18 @@ import SwiftUI
 ///
 /// 它回答四个问题，都是零点击就能看到的：今天要做什么、今天做了什么、
 /// 有没有会要料理、有什么通知还没弹。
-/// 数据全在本机（记忆库的 plan/done/note、会议列表、通知队列），不申请新权限。
+/// 数据全在本机（记忆库的 plan/done/note、会议列表、安排表），不申请新权限。
 struct TodayView: View {
     @EnvironmentObject private var meetings: MeetingStore
     @EnvironmentObject private var chats: ChatStore
     @EnvironmentObject private var settings: SettingsStore
     @ObservedObject private var router = AppRouter.shared
     @ObservedObject private var memory = MemoryStore.shared
-    @ObservedObject private var notes = NoteStore.shared
+    @ObservedObject private var items = ItemStore.shared
     @ObservedObject private var balance = BalanceStore.shared
 
     @State private var path = NavigationPath()
     @State private var showRecorder = false
-    @State private var pendingNotices: [NotificationService.Pending] = []
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -36,6 +35,9 @@ struct TodayView: View {
             .navigationDestination(for: TodayChatRoute.self) { route in
                 ChatView(threadID: route.id)
             }
+            .navigationDestination(for: TodayScheduleRoute.self) { _ in
+                ScheduleView()
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if balance.supports(settings) { balanceChip }
@@ -51,9 +53,17 @@ struct TodayView: View {
             .onAppear {
                 memory.reload()
                 balance.refreshIfStale(settings: settings)
-                Task { await refreshNotices() }
+                openScheduleIfRequested()
             }
+            .onChange(of: router.showSchedule) { _, _ in openScheduleIfRequested() }
         }
+    }
+
+    /// 别处（对话里存下东西之后、点通知本体）请求看「安排」：把请求消费掉并推进去
+    private func openScheduleIfRequested() {
+        guard router.showSchedule else { return }
+        router.showSchedule = false
+        path.append(TodayScheduleRoute())
     }
 
     // MARK: - 问候与主操作
@@ -251,49 +261,65 @@ struct TodayView: View {
 
     // MARK: - 待弹通知
 
+    /// 今天要弹的，加上已经过点但还没处理的（说明手机刚醒，或者 App 刚回来）
+    private var todayNotices: [AssistantItem] {
+        items.sorted(items.upcomingItems)
+            .filter { item in
+                guard let fire = item.fireDate else { return false }
+                return Calendar.current.isDateInToday(fire) || fire < Date()
+            }
+    }
+
     @ViewBuilder
     private var noticeSection: some View {
-        if !todayNotices.isEmpty {
-            Section("待弹的通知") {
-                ForEach(todayNotices) { notice in
+        if !items.items.isEmpty {
+            Section {
+                ForEach(todayNotices.prefix(5)) { item in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(notice.title)
+                        Text(item.title)
                             .font(.body)
-                        Text(notice.fireDate.formatted(date: .omitted, time: .shortened) + " 弹出")
+                        Text(noticeLine(item))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 2)
                 }
+                NavigationLink {
+                    ScheduleView()
+                } label: {
+                    Text(todayNotices.isEmpty ? "看全部安排" : "看全部安排（今天 \(todayNotices.count) 条要弹）")
+                        .font(.footnote)
+                }
+            } header: {
+                Text("待弹的通知")
+            } footer: {
+                if todayNotices.isEmpty {
+                    Text("今天没有要到点的提醒。所有安排——能改时间、改备注、拖动排序——都在「安排」里。")
+                }
             }
         }
     }
 
-    private var todayNotices: [NotificationService.Pending] {
-        // 今天的 + 已经过点但还没弹出来的（说明手机刚醒）
-        pendingNotices.filter { notice in
-            Calendar.current.isDateInToday(notice.fireDate) || notice.fireDate < Date()
-        }
-        .sorted { $0.fireDate < $1.fireDate }
-    }
-
-    private func refreshNotices() async {
-        let list = await NotificationService.pending()
-        await MainActor.run { self.pendingNotices = list }
+    private func noticeLine(_ item: AssistantItem) -> String {
+        guard let fire = item.fireDate else { return item.kind.label }
+        let when = ItemTimeText.when(fire)
+        guard fire > Date() else { return "\(when) · 时间已过" }
+        return "\(when) · \(ItemTimeText.relative(fire))"
     }
 
     // MARK: - 备忘
 
     @ViewBuilder
     private var noteSection: some View {
-        if !notes.notes.isEmpty {
+        let notes = items.sorted(items.timelessItems).filter { $0.kind == .note }
+        if !notes.isEmpty {
             Section("备忘") {
-                ForEach(notes.notes.prefix(5)) { note in
+                ForEach(notes.prefix(5)) { note in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(note.title)
                             .font(.body)
-                        if !note.body.isEmpty {
-                            Text(note.body)
+                        if !note.notes.isEmpty {
+                            Text(note.notes)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -358,6 +384,7 @@ struct TodayView: View {
 /// 免得两个 navigationDestination(for: String.self) 撞在一起。
 struct TodayMeetingRoute: Hashable { let id: String }
 struct TodayChatRoute: Hashable { let id: String }
+struct TodayScheduleRoute: Hashable {}
 
 #Preview {
     TodayView()

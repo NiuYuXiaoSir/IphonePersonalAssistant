@@ -13,7 +13,7 @@ struct MemoryRoute: Hashable {}
 struct MemoryView: View {
     @ObservedObject private var memory = MemoryStore.shared
 
-    @State private var showClearConfirm = false
+    @State private var clearScope: MemoryStore.Scope?
 
     var body: some View {
         List {
@@ -26,33 +26,62 @@ struct MemoryView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        memory.clear(.timeline)
+                        clearScope = .timeline
                     } label: {
                         Label("清空每日流水", systemImage: "calendar")
                     }
                     Button {
-                        memory.clear(.facts)
+                        clearScope = .facts
                     } label: {
                         Label("清空长期记忆", systemImage: "brain")
                     }
                     Button(role: .destructive) {
-                        showClearConfirm = true
+                        clearScope = .all
                     } label: {
                         Label("清空全部记忆", systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("更多操作")
                 .disabled(memory.facts.isEmpty && memory.logs.isEmpty)
             }
         }
-        .confirmationDialog("清空全部记忆？", isPresented: $showClearConfirm, titleVisibility: .visible) {
-            Button("清空", role: .destructive) { memory.clear(.all) }
-            Button("取消", role: .cancel) {}
+        // 清空是不可撤销的，所以三档清空都先问一次——
+        // 以前只有「全部」问，另外两档点一下就没了（HIG 的 Alerts 页：
+        // 不可撤销的动作要弹一下，免得是误触）
+        .confirmationDialog(clearTitle,
+                            isPresented: Binding(get: { clearScope != nil },
+                                                 set: { if !$0 { clearScope = nil } }),
+                            titleVisibility: .visible) {
+            Button("清空", role: .destructive) {
+                if let scope = clearScope { memory.clear(scope) }
+                clearScope = nil
+            }
+            Button("取消", role: .cancel) { clearScope = nil }
         } message: {
-            Text("长期记忆和每日流水都会被删掉。已经写进提醒事项、日历、备忘的东西不受影响。")
+            Text(clearMessage)
         }
         .onAppear { memory.reload() }
+    }
+
+    private var clearTitle: String {
+        switch clearScope {
+        case .facts:    return "清空长期记忆？"
+        case .timeline: return "清空每日流水？"
+        default:        return "清空全部记忆？"
+        }
+    }
+
+    private var clearMessage: String {
+        switch clearScope {
+        case .facts:
+            return "关于你的稳定事实（人物、偏好、在做的事）会被删掉，流水留着。清空之后只能重新告诉它。"
+        case .timeline:
+            return "按天记的流水（做了什么、打算做什么）会被删掉，长期记忆留着。"
+        default:
+            return "长期记忆和每日流水都会被删掉。已经存下的条目和备忘不受影响。"
+        }
     }
 
     // MARK: - 长期记忆
@@ -61,9 +90,11 @@ struct MemoryView: View {
     private var factsSection: some View {
         Section {
             if memory.facts.isEmpty {
-                Text("还没有长期记忆。对话里说「老王是桥杆供应商」「我一般十点睡」这类话，它会记在这里。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                ContentUnavailableView {
+                    Label("还没有长期记忆", systemImage: "brain")
+                } description: {
+                    Text("在对话里说「老王是桥杆供应商」「我一般十点睡」这类话，它就会记在这里。")
+                }
             } else {
                 ForEach(memory.facts) { fact in
                     logRow(icon: fact.kind.symbol,
@@ -74,6 +105,14 @@ struct MemoryView: View {
                             memory.delete(fact: fact)
                         } label: {
                             Label("删除", systemImage: "trash")
+                        }
+                    }
+                    // 左滑不是唯一入口：长按也能删（HIG 的 Gestures 页要求重要动作有第二条路）
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            memory.delete(fact: fact)
+                        } label: {
+                            Label("删除这条", systemImage: "trash")
                         }
                     }
                 }
@@ -91,9 +130,11 @@ struct MemoryView: View {
     private var timelineSection: some View {
         if memory.dayGroups.isEmpty {
             Section {
-                Text("还没有流水。对话里说「今天去厂里看了桥杆」，或者在速记页记一条，都会按天记在这里。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                ContentUnavailableView {
+                    Label("还没有流水", systemImage: "calendar.badge.clock")
+                } description: {
+                    Text("说一句「今天去厂里看了桥杆」，或者在「＋」里记一条，都会按天记在这里。")
+                }
             } header: {
                 Text("每日流水")
             }
@@ -109,6 +150,13 @@ struct MemoryView: View {
                                 memory.delete(log: log)
                             } label: {
                                 Label("删除", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                memory.delete(log: log)
+                            } label: {
+                                Label("删除这条", systemImage: "trash")
                             }
                         }
                     }

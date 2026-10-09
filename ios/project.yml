@@ -69,11 +69,12 @@ targets:
         # —— 权限声明 ——
         # 一律写成「拿它干什么」，主动语态、说具体的事（HIG 的 Privacy 页要求；
         # 反例是 Apple 自己举的「Microphone access is needed for a better experience.」）。
+        # 日历/提醒事项两条声明已经删掉：App 不再读写系统里的其他 App，
+        # 待办、日程、备忘全在本机数据库里（HIG 的 Privacy 页：「Request access only to
+        # data that you actually need」——不用的权限就别申请）。
         NSMicrophoneUsageDescription: 录下会议内容，会后转成文字并生成纪要。只有你点了「开始记录会议」才会录音。
         NSSpeechRecognitionUsageDescription: 把录到的语音转成文字，用于会议纪要和速记。
         NSCameraUsageDescription: 拍白板、纸质笔记或名片，识别里面的待办和时间。
-        NSCalendarsFullAccessUsageDescription: 把你说出的日程写进日历的「AI助理」列表；核对权限时会读一次日历。
-        NSRemindersFullAccessUsageDescription: 把你说出的待办写进提醒事项的「AI助理」列表；核对权限时会读一次提醒事项。
         # 长按图标弹出的快捷菜单（3D Touch / Haptic Touch）
         UIApplicationShortcutItems:
           - UIApplicationShortcutItemType: com.niuyuxiaosir.iphoneassistant.probe.record

@@ -1,6 +1,5 @@
 import SwiftUI
 import AVFoundation
-import EventKit
 import UserNotifications
 import UIKit
 
@@ -9,9 +8,11 @@ import UIKit
 /// 它回答的问题：
 ///  1. 免费签名的描述文件多久过期？7 天续签后 App 数据还在不在？（launchCount / firstLaunch）
 ///  2. 麦克风 + 后台录音（UIBackgroundModes: audio）在免费签名下能不能用？
-///  3. 日历 / 提醒事项的授权弹窗流程是否顺畅？能不能创建待办并写进指定的提醒列表？
-///  4. 没有推送能力时，本地通知是否正常工作？
-///  5. 免费签名下 entitlements 里到底有什么？（App Groups 有没有？）
+///  3. 没有推送能力时，本地通知是否正常工作？（通知现在是这个 App 唯一的提醒通道）
+///  4. 免费签名下 entitlements 里到底有什么？（App Groups 有没有？）
+///
+/// 原本还有「日历 / 提醒事项读写」两项。2026-10-09 起 App 不再读写系统里的其他 App
+/// （待办、日程、备忘全在本机数据库里），那两项连同 EventKit 依赖一起去掉了。
 final class ProbeStore: ObservableObject {
 
     // MARK: - 装机信息
@@ -24,11 +25,6 @@ final class ProbeStore: ObservableObject {
     @Published var recordSeconds: Double = 0
     @Published var recordStatus = "未测试"
     @Published var recordings: [String] = []
-
-    // MARK: - 日历 / 提醒事项
-    @Published var calendarStatus = "未测试"
-    @Published var reminderStatus = "未测试"
-    @Published var reminderWriteStatus = "未测试"
 
     // MARK: - 通知
     @Published var notificationStatus = "未测试"
@@ -223,135 +219,6 @@ final class ProbeStore: ObservableObject {
         recordings = files.filter { $0.hasSuffix(".m4a") }.sorted()
     }
 
-    // MARK: - 日历
-
-    func testCalendar() {
-        let store = EKEventStore()
-        store.requestFullAccessToEvents { [weak self] granted, error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                guard granted else {
-                    let status = EKEventStore.authorizationStatus(for: .event).rawValue
-                    self.calendarStatus = """
-                    ❌ 日历权限被拒绝（系统状态码 \(status)，错误：\(error?.localizedDescription ?? "无")）
-                    去 设置 → 隐私与安全性 → 日历 → 打开「助理探针」的开关，然后重新点这个测试。
-                    """
-                    return
-                }
-                let cal = Calendar.current
-                let start = cal.startOfDay(for: Date())
-                let end = cal.date(byAdding: .day, value: 1, to: start) ?? Date()
-                let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
-                let events = store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
-                let preview = events.prefix(5).map { ev -> String in
-                    let t = Self.hmFormatter.string(from: ev.startDate)
-                    return "  · \(t) \(ev.title ?? "(无标题)")"
-                }.joined(separator: "\n")
-                self.calendarStatus = """
-                ✅ 日历授权成功
-                今天有 \(events.count) 个日程
-                \(events.isEmpty ? "  （今天没有日程，这是正常的）" : preview)
-                """
-            }
-        }
-    }
-
-    // MARK: - 提醒事项（读）
-
-    func testReminders() {
-        let store = EKEventStore()
-        store.requestFullAccessToReminders { [weak self] granted, error in
-            guard granted else {
-                DispatchQueue.main.async {
-                    self?.reminderStatus = "❌ 提醒事项权限被拒绝 / 出错：\(error?.localizedDescription ?? "无错误信息")"
-                }
-                return
-            }
-            let predicate = store.predicateForReminders(in: nil)
-            store.fetchReminders(matching: predicate) { reminders in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    let all = reminders ?? []
-                    let lists = store.calendars(for: .reminder).map { $0.title }.sorted()
-                    let open = all.filter { !$0.isCompleted }
-                    let preview = open.prefix(5).map { "  · \($0.title ?? "(无标题)")" }.joined(separator: "\n")
-                    self.reminderStatus = """
-                    ✅ 提醒事项授权成功
-                    可见列表 \(lists.count) 个：\(lists.joined(separator: "、"))
-                    未完成待办 \(open.count) 条
-                    \(open.isEmpty ? "" : preview)
-                    """
-                }
-            }
-        }
-    }
-
-    // MARK: - 提醒事项（写）—— 验证 PRD 4.5 的实际写入路径
-
-    func testReminderWrite() {
-        let store = EKEventStore()
-        store.requestFullAccessToReminders { [weak self] granted, error in
-            guard granted else {
-                DispatchQueue.main.async {
-                    self?.reminderWriteStatus = "❌ 提醒事项权限被拒绝：\(error?.localizedDescription ?? "无错误信息")"
-                }
-                return
-            }
-            guard let source = store.defaultCalendarForNewReminders()?.source ?? store.sources.first else {
-                DispatchQueue.main.async { self?.reminderWriteStatus = "❌ 找不到可用的提醒事项来源" }
-                return
-            }
-
-            // 找到或新建「AI助理」列表
-            var target = store.calendars(for: .reminder).first { $0.title == "AI助理" }
-            var createdList = false
-            if target == nil {
-                let cal = EKCalendar(for: .reminder, eventStore: store)
-                cal.title = "AI助理"
-                cal.source = source
-                do {
-                    try store.saveCalendar(cal, commit: true)
-                    target = cal
-                    createdList = true
-                } catch {
-                    DispatchQueue.main.async {
-                        self?.reminderWriteStatus = "❌ 创建提醒列表失败: \(error.localizedDescription)"
-                    }
-                    return
-                }
-            }
-            guard let list = target else { return }
-
-            let reminder = EKReminder(eventStore: store)
-            reminder.title = "E1 探针测试待办"
-            reminder.calendar = list
-            reminder.notes = "由探针测试于 \(Self.df.string(from: Date())) 创建。可以删掉。"
-            reminder.priority = 1
-            reminder.dueDateComponents = Calendar.current.dateComponents(
-                [.year, .month, .day, .hour, .minute],
-                from: Date().addingTimeInterval(3600)
-            )
-            reminder.addAlarm(EKAlarm(relativeOffset: -300))
-
-            do {
-                try store.save(reminder, commit: true)
-                DispatchQueue.main.async {
-                    self?.reminderWriteStatus = """
-                    ✅ 写入成功
-                    列表「AI助理」\(createdList ? "（本次新建）" : "（已存在）")
-                    待办：E1 探针测试待办
-                    截止：1 小时后，提前 5 分钟提醒，优先级=高
-                    去「提醒事项」App 确认它是否出现、是否同步到了 iCloud
-                    """
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self?.reminderWriteStatus = "❌ 写入待办失败: \(error.localizedDescription)"
-                }
-            }
-        }
-    }
-
     // MARK: - 本地通知（验证没有推送能力时通知是否可用）
 
     func testNotification() {
@@ -418,15 +285,6 @@ final class ProbeStore: ObservableObject {
         --- 录音 / 后台录音 ---
         \(recordStatus)
         已有录音文件: \(recordings.isEmpty ? "无" : recordings.joined(separator: ", "))
-
-        --- 日历 ---
-        \(calendarStatus)
-
-        --- 提醒事项（读）---
-        \(reminderStatus)
-
-        --- 提醒事项（写）---
-        \(reminderWriteStatus)
 
         --- 本地通知 ---
         \(notificationStatus)

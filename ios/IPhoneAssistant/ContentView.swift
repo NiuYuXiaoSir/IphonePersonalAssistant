@@ -17,7 +17,6 @@ struct DiagnosticsView: View {
                 installSection
                 signingSection
                 recordingSection
-                systemDataSection
                 notificationSection
                 loggerSection
             }
@@ -114,31 +113,16 @@ struct DiagnosticsView: View {
         }
     }
 
-    // MARK: - 日历 / 提醒事项
-
-    private var systemDataSection: some View {
-        Section {
-            Button("测试读取日历") { store.testCalendar() }
-            Text(store.calendarStatus).font(.footnote).foregroundStyle(.secondary)
-
-            Button("测试读取提醒事项") { store.testReminders() }
-            Text(store.reminderStatus).font(.footnote).foregroundStyle(.secondary)
-
-            Button("测试写入待办到「AI助理」列表") { store.testReminderWrite() }
-            Text(store.reminderWriteStatus).font(.footnote).foregroundStyle(.secondary)
-        } header: {
-            Text("④ 日历与提醒事项")
-        } footer: {
-            Text("第三项走的是和「速记」页保存待办完全相同的写入路径。")
-        }
-    }
+    // MARK: - 本地通知
 
     private var notificationSection: some View {
         Section {
             Button("安排一条 10 秒后的本地通知") { store.testNotification() }
             Text(store.notificationStatus).font(.footnote).foregroundStyle(.secondary)
         } header: {
-            Text("⑤ 本地通知（免费签名没有推送，只能靠它）")
+            Text("④ 本地通知（免费签名没有推送，只能靠它）")
+        } footer: {
+            Text("通知是这个 App 唯一的提醒通道：待办、日程、提醒到点都靠它弹。这一项验证的是「没有推送能力时，本地通知还能不能按时响」。")
         }
     }
 
@@ -168,7 +152,7 @@ struct DiagnosticsView: View {
                 .font(.system(.caption2, design: .monospaced))
                 .textSelection(.enabled)
         } header: {
-            Text("⑥ 运行日志")
+            Text("⑤ 运行日志")
         } footer: {
             Text("这台手机上装不了开发工具，出问题时这段日志就是唯一的线索。把它发给我就行。")
         }

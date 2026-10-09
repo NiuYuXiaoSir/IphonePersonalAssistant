@@ -1,19 +1,20 @@
 import SwiftUI
 import UIKit
 
-/// 速记页：手动新建待办 / 日程 / 备忘。
+/// 速记页：手动新建待办 / 日程 / 备忘 / 提醒。
 ///
 /// 这一页不经过 AI，也不该出现「解析」这种词——自己清楚要记什么的时候，
 /// 一项项填完保存，比说一句话再回头改更快也更准。
 /// 想让助理从一段话里替你拆出来，去「对话」页。
 ///
 /// 版式用系统 Form：分段选择、开关、日期选择、行、页脚说明都是系统给的。
+/// 已记下的东西不在这里列——它们在「今日 → 安排」，那一页能改能排序。
 struct AssistantView: View {
 
     /// 从「＋」面板选「语音速记」进来时，话筒直接开着
     var autoStartVoice: Bool = false
 
-    @ObservedObject private var noteStore = NoteStore.shared
+    @ObservedObject private var items = ItemStore.shared
     @StateObject private var liveASR = LiveSpeechRecognizer()
 
     @State private var kind: ParsedItem.Kind = .todo
@@ -22,17 +23,17 @@ struct AssistantView: View {
     @State private var hasDueDate = false
     @State private var dueDate = Date().addingTimeInterval(3600)
     @State private var durationMinutes = 60
-    @State private var priority = "normal"
+    @State private var remindBeforeMinutes = 0
 
     @State private var busy = false
     @State private var message = ""
     @State private var messageIsError = false
     @State private var toast = ""
     @State private var voicePrefix = ""
-    /// 已经排上、还没弹出的通知
-    @State private var pendingNotices: [NotificationService.Pending] = []
 
     private let durationOptions = [15, 30, 45, 60, 90, 120, 180]
+    /// 提前提醒的档位。0 = 到点
+    private let remindOptions = [0, 5, 10, 15, 30, 60]
 
     var body: some View {
         Form {
@@ -43,8 +44,6 @@ struct AssistantView: View {
             if kind == .notification { noticeTimeSection }
             notesFieldSection
             saveSection
-            if hasPendingNotices { pendingNoticeSection }
-            if hasNotes { savedNotesSection }
         }
         .scrollDismissesKeyboard(.immediately)
         .navigationTitle("速记")
@@ -64,9 +63,13 @@ struct AssistantView: View {
         .onChange(of: liveASR.liveText) { _, text in
             if liveASR.isRunning { title = voicePrefix + text }
         }
+        .onChange(of: liveASR.transcript) { _, text in
+            guard !text.isEmpty else { return }
+            title = voicePrefix + text
+            voicePrefix = ""
+        }
         .onDisappear { if liveASR.isRunning { liveASR.stop() } }
         .onAppear {
-            Task { await refreshNotices() }
             if autoStartVoice && !liveASR.isRunning { toggleVoice() }
         }
         .toast($toast)
@@ -95,16 +98,16 @@ struct AssistantView: View {
     private var bodyHeader: String { kind == .note ? "正文" : "备注" }
     private var dueHint: String {
         hasDueDate
-            ? "到点会弹一条通知。要提前提醒的话，在「对话」页直说，比如「提前半小时提醒我」。"
+            ? "到点会弹一条通知。想提前一点提醒，用下面的「提前提醒」。"
             : "不设时间就是一条没有截止时间的待办，不会提醒。"
     }
 
     private var kindHint: String {
         switch kind {
-        case .todo:         return "写一件要做的事，可以设个提醒时间。保存后进提醒事项的「AI助理」列表。"
-        case .event:        return "写一件要占用一段时间的事（会议、约人），保存后进日历的「AI助理」。"
-        case .note:         return "记一条信息，不需要行动、也不提醒。存在 App 里，可以复制走。"
-        case .notification: return "到点弹一条通知就完事，不写进提醒事项。适合几分钟到几小时后要响一下的事。"
+        case .todo:         return "写一件要做的事。设了时间到点会提醒，办完可以在「安排」里打勾，也可以直接在通知上点「完成」。"
+        case .event:        return "写一件要占用一段时间的事（会议、约人），到点会提醒你。"
+        case .note:         return "记一条信息，不提醒、不用打勾。存在 App 里，可以整条复制走。"
+        case .notification: return "到点弹一条通知就完事，不用回来打勾。适合几分钟到几小时后要响一下的事。"
         }
     }
 
@@ -143,17 +146,21 @@ struct AssistantView: View {
             Toggle("设个提醒时间", isOn: $hasDueDate)
             if hasDueDate {
                 DatePicker("提醒时间", selection: $dueDate, displayedComponents: [.date, .hourAndMinute])
+                remindPicker
             }
-            Picker("优先级", selection: $priority) {
-                Text("低").tag("low")
-                Text("中").tag("normal")
-                Text("高").tag("high")
-            }
-            .pickerStyle(.segmented)
         } header: {
             Text("提醒")
         } footer: {
             Text(dueHint)
+        }
+    }
+
+    /// 提前多久提醒。以前只有对话里能说「提前半小时」，手填的没有这个选项。
+    private var remindPicker: some View {
+        Picker("提前提醒", selection: $remindBeforeMinutes) {
+            ForEach(remindOptions, id: \.self) { minutes in
+                Text(minutes == 0 ? "到点" : "提前 \(minutes) 分钟").tag(minutes)
+            }
         }
     }
 
@@ -165,6 +172,7 @@ struct AssistantView: View {
                     Text(Self.durationLabel(minutes)).tag(minutes)
                 }
             }
+            remindPicker
         } header: {
             Text("时间")
         }
@@ -176,7 +184,7 @@ struct AssistantView: View {
         } header: {
             Text("时间")
         } footer: {
-            Text("到点弹一条系统通知。这条不会出现在提醒事项里——想让事情留下来打勾，选「待办」。")
+            Text("到点弹一条系统通知，通知上可以直接点「完成」或「延后 10 分钟」。不想让它响了，来「今日 → 安排」里删掉。")
         }
     }
 
@@ -210,92 +218,16 @@ struct AssistantView: View {
                     .foregroundStyle(messageIsError ? Color.orange : Color.green)
             }
         } footer: {
-            Text("待办进提醒事项的「AI助理」列表，日程进日历的「AI助理」。这一页不联网，没配密钥也能用。")
+            Text("记下的东西都存在本机，不碰系统里的提醒事项和日历，也就不需要那些权限。这一页不联网，没配密钥也能用。")
         }
     }
 
     private var saveButtonTitle: String {
         switch kind {
-        case .todo:         return "保存到提醒事项"
-        case .event:        return "保存到日历"
+        case .todo:         return "存下这条待办"
+        case .event:        return "存下这个日程"
         case .note:         return "记下这条备忘"
-        case .notification: return "安排这条通知"
-        }
-    }
-
-    private var hasNotes: Bool {
-        !noteStore.notes.isEmpty
-    }
-
-    private var hasPendingNotices: Bool {
-        !pendingNotices.isEmpty
-    }
-
-    /// 还没弹出来的通知。iOS 自己不给用户看这个队列，所以在这里列出来，
-    /// 不然「10 分钟后提醒我」排下去之后就没法撤了。
-    private var pendingNoticeSection: some View {
-        Section {
-            ForEach(pendingNotices) { notice in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(notice.title)
-                        .font(.subheadline.weight(.medium))
-                    Text(notice.fireDate.formatted(date: .abbreviated, time: .shortened) + " 弹出")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
-                .swipeActions {
-                    Button(role: .destructive) {
-                        NotificationService.cancel(id: notice.id)
-                        pendingNotices.removeAll { $0.id == notice.id }
-                    } label: {
-                        Label("取消", systemImage: "bell.slash")
-                    }
-                }
-            }
-        } header: {
-            Text("已安排的通知（\(pendingNotices.count) 条）")
-        } footer: {
-            Text("这些通知还没弹出来，左滑可以取消。它们只在手机的通知队列里，不在提醒事项里。")
-        }
-    }
-
-    private var savedNotesSection: some View {
-        Section {
-            ForEach(noteStore.notes) { note in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(note.title)
-                        .font(.subheadline.weight(.medium))
-                    if !note.body.isEmpty {
-                        Text(note.body)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                    }
-                    Text(note.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 2)
-                .swipeActions {
-                    Button(role: .destructive) {
-                        noteStore.delete(note)
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                    }
-                    Button {
-                        UIPasteboard.general.string = note.body.isEmpty ? note.title : "\(note.title)\n\(note.body)"
-                        toast = "已复制到剪贴板"
-                    } label: {
-                        Label("复制", systemImage: "doc.on.doc")
-                    }
-                    .tint(Color.accentColor)
-                }
-            }
-        } header: {
-            Text("备忘（\(noteStore.notes.count) 条）")
-        } footer: {
-            Text("系统的「备忘录」没有对外写入的接口，所以备忘存在本应用里。在「文件」的「私人助理」目录下能看到这份备忘文件，也可以在这里左滑复制走。")
+        case .notification: return "安排这条提醒"
         }
     }
 
@@ -328,69 +260,52 @@ struct AssistantView: View {
         hideKeyboard()
         busy = true
 
-        // 只有需要时间的类型才带时间；备忘和「不设时间」的待办一律空串，
-        // 空串在 SystemWriter 那边等于「不设截止时间、也不提醒」。
+        // 只有需要时间的类型才带时间；备忘和「不设时间」的待办给空串，
+        // 空串在 ItemWriter 那边等于「不设时刻、不会提醒」。
         let dueString = needsTime ? Self.dueFormatter.string(from: dueDate) : ""
         let body = notes
         let itemKind = kind
-        let itemPriority = priority
         let itemDuration = durationMinutes
+        let itemRemind = kind == .notification ? 0 : remindBeforeMinutes
         let displayTime = dueDate.formatted(date: .abbreviated, time: .shortened)
 
-        Task {
-            do {
-                // 每条分支都赋值一次，赋值完再交给主线程使用，
-                // 免得跨线程去改一个可变的捕获变量
-                let done: String
-                switch itemKind {
-                case .todo:
-                    try await SystemWriter.writeReminder(title: trimmed,
-                                                         notes: body,
-                                                         dueDate: dueString,
-                                                         priority: itemPriority,
-                                                         remindBeforeMinutes: 0)
-                    done = dueString.isEmpty
-                        ? "已存进提醒事项：\(trimmed)（没有设时间）"
-                        : "已存进提醒事项：\(trimmed) · \(displayTime)"
-                case .event:
-                    try await SystemWriter.writeEvent(title: trimmed,
-                                                      notes: body,
-                                                      dueDate: dueString,
-                                                      durationMinutes: itemDuration)
-                    done = "已存进日历：\(trimmed) · \(displayTime)，\(Self.durationLabel(itemDuration))"
-                case .note:
-                    NoteStore.shared.add(title: trimmed, body: body)
-                    done = "已记下备忘：\(trimmed)"
-                case .notification:
-                    try await SystemWriter.writeNotification(title: trimmed,
-                                                             body: body,
-                                                             dueDate: dueString)
-                    done = "已安排通知：\(trimmed) · \(displayTime)"
-                }
-                await MainActor.run {
-                    self.busy = false
-                    self.message = ""
-                    self.toast = done
-                    self.title = ""
-                    self.notes = ""
-                    AppLog.info("QuickAdd", done)
-                    // 手记的东西也进每日流水：不然「明天要做什么」只算对话里说过的那些。
-                    // 时间取条目上的日期，没设时间的算今天。
-                    let day = Self.dayString(from: dueString)
-                    let logKind: MemoryKind = itemKind == .note ? .note : .plan
-                    MemoryStore.shared.logManual(kind: logKind,
-                                                 content: Self.logContent(title: trimmed, kind: itemKind, notes: body),
-                                                 day: day,
-                                                 source: "quickadd")
-                }
-                if itemKind == .notification { await refreshNotices() }
-            } catch {
-                await MainActor.run {
-                    self.busy = false
-                    self.message = error.localizedDescription
-                    self.messageIsError = true
-                }
+        // 存的是本机数据库里的一行，不需要网络也不需要系统权限，同步做完
+        do {
+            let parsed = ParsedItem(kind: itemKind,
+                                    title: trimmed,
+                                    notes: body,
+                                    dueDate: dueString,
+                                    durationMinutes: itemKind == .event ? itemDuration : 0,
+                                    remindBeforeMinutes: itemRemind)
+            try ItemWriter.save(parsed, source: "quickadd")
+
+            busy = false
+            message = ""
+            switch itemKind {
+            case .todo:
+                toast = dueString.isEmpty ? "已记下：\(trimmed)（没有设时间）" : "到点会提醒你：\(trimmed) · \(displayTime)"
+            case .event:
+                toast = "已存下：\(trimmed) · \(displayTime)，\(Self.durationLabel(itemDuration))"
+            case .note:
+                toast = "已记下备忘：\(trimmed)"
+            case .notification:
+                toast = "到点会弹一下：\(trimmed) · \(displayTime)"
             }
+            AppLog.info("QuickAdd", toast)
+            title = ""
+            notes = ""
+            // 手记的东西也进每日流水：不然「明天要做什么」只算对话里说过的那些。
+            // 时间取条目上的日期，没设时间的算今天。
+            let day = Self.dayString(from: dueString)
+            let logKind: MemoryKind = itemKind == .note ? .note : .plan
+            MemoryStore.shared.logManual(kind: logKind,
+                                         content: Self.logContent(title: trimmed, kind: itemKind, notes: body),
+                                         day: day,
+                                         source: "quickadd")
+        } catch {
+            busy = false
+            message = error.localizedDescription
+            messageIsError = true
         }
     }
 
@@ -401,11 +316,6 @@ struct AssistantView: View {
         case .note:         return false
         case .notification: return true
         }
-    }
-
-    private func refreshNotices() async {
-        let list = await NotificationService.pending()
-        await MainActor.run { self.pendingNotices = list }
     }
 
     // MARK: - 小工具
@@ -428,7 +338,7 @@ struct AssistantView: View {
     /// 条目日期（yyyy-MM-dd HH:mm 或空）→ 这一条算在哪天的流水里
     private static func dayString(from dueString: String) -> String? {
         let trimmed = dueString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let date = SystemWriter.date(from: trimmed, defaultHour: 9) else { return nil }
+        guard !trimmed.isEmpty, let date = ItemTime.date(from: trimmed, defaultHour: 9) else { return nil }
         return MemoryStore.dayString(date)
     }
 

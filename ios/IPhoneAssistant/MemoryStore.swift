@@ -309,7 +309,7 @@ final class MemoryStore: ObservableObject {
     static func day(fromText text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if let date = SystemWriter.date(from: trimmed, defaultHour: 9) {
+        if let date = ItemTime.date(from: trimmed, defaultHour: 9) {
             return dayString(date)
         }
         return nil
