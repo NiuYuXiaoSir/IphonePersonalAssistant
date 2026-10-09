@@ -12,6 +12,13 @@ import PhotosUI
 /// 底部一条输入胶囊。模型回来的话按 Markdown 轻渲染——问「今天做了什么」时它常带列表和粗体，
 /// 不渲染就会露出 ** 和 - 这些符号。
 ///
+/// 消息上的动作（引用 / 复制 / 朗读 / 删除）走**长按菜单**，不再常驻一排小图标：
+/// 那排按钮会一直占着正文下面的位置，看着像工具面板，不像在跟人说话。
+/// 长按看一条消息能做什么，是和微信、信息一致的照做（HIG 的 Menus 页：
+/// context menu「lets people access a small number of frequently used actions
+/// relevant to their current view or task」；Gestures 页把 touch and hold 定义为
+/// 「Reveal additional controls or functionality」）。
+///
 /// 它是被「对话」列表推进来的（外面已经有 NavigationStack），所以这里不再套一层。
 struct ChatView: View {
     @EnvironmentObject private var settings: SettingsStore
@@ -33,6 +40,11 @@ struct ChatView: View {
     @State private var showCamera = false
     @State private var showClearConfirm = false
     @State private var toast = ""
+    /// 正在引用（回复）哪一条。引用块挂在输入框上方，发出去或点叉就没了。
+    @State private var quoting: ChatQuote?
+    /// 点了引用块要跳到的那条消息。ScrollViewReader 的代理在 conversation 里，
+    /// 所以这里只放个「要去哪」，由那边负责滚。
+    @State private var scrollTarget: String?
     /// 语音输入是「接着已经打的字往下说」，不是把输入框清空重来
     @State private var voicePrefix = ""
     /// 正在跑的请求。用来支持「停止」。
@@ -236,6 +248,14 @@ struct ChatView: View {
             .onChange(of: entries.count) { _, _ in scrollToBottom(proxy) }
             .onChange(of: entries.last?.state) { _, _ in scrollToBottom(proxy) }
             .onChange(of: entries.last?.items?.count) { _, _ in scrollToBottom(proxy) }
+            // 点了引用块：滚到被引用的那条，停一下再松开目标
+            .onChange(of: scrollTarget) { _, target in
+                guard let target else { return }
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo(target, anchor: .center)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { scrollTarget = nil }
+            }
         }
     }
 
@@ -263,26 +283,60 @@ struct ChatView: View {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: 8) {
                 if !entry.images.isEmpty { imageStrip(entry.images) }
-                if !entry.text.isEmpty {
-                    Text(entry.text)
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Color(uiColor: .secondarySystemBackground),
-                                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                if !entry.text.isEmpty || entry.quote != nil {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let quote = entry.quote { quotedBlock(quote) }
+                        if !entry.text.isEmpty {
+                            Text(entry.text)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color(uiColor: .secondarySystemBackground),
+                                in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
             }
-            .contextMenu {
-                Button(role: .destructive) {
-                    hapticWarning += 1
-                    removeEntry(entry.id)
-                } label: {
-                    Label("删除这条", systemImage: "trash")
-                }
-            }
+            .contextMenu { messageMenu(entry) }
         }
+    }
+
+    /// 气泡里那块引用（微信里的样子）：左边一条竖线，上面是被引用的人，下面是那句话。
+    /// 点一下跳回原消息；原消息删了就说一声，不做无声失败。
+    private func quotedBlock(_ quote: ChatQuote) -> some View {
+        Button {
+            guard entries.contains(where: { $0.id == quote.entryID }) else {
+                toast = "引用的那条消息已经不在了"
+                return
+            }
+            scrollTarget = quote.entryID
+        } label: {
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.45))
+                    .frame(width: 3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(quote.author)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(quote.displayText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                }
+                .padding(.vertical, 5)
+                .padding(.leading, 8)
+                .padding(.trailing, 10)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(uiColor: .tertiarySystemFill),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("引用\(quote.author)说的：\(quote.displayText)。点按跳到那条消息")
     }
 
     private func imageStrip(_ names: [String]) -> some View {
@@ -324,7 +378,6 @@ struct ChatView: View {
                 rendered(entry.text)
                     .font(.body)
                     .foregroundStyle(entry.state == .failed ? Color.orange : Color.primary)
-                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -365,12 +418,50 @@ struct ChatView: View {
             if let result = entry.result {
                 resultCard(entry, result: result)
             }
-
-            if entry.state != .thinking && !entry.text.isEmpty {
-                actionRow(entry)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // 助手这条也一样长按出菜单。正文不再开「选择文字」——开了之后长按会被
+        // 文字选择的系统菜单接管，长按菜单就出不来，两个手势会互相盖住。
+        .contextMenu { messageMenu(entry) }
+    }
+
+    /// 一条消息能做的事。长按出菜单，不再常驻一排图标。
+    ///
+    /// 顺序按 HIG 的 Menus 页来：常用的放前面（引用 → 复制 → 朗读），
+    /// 破坏性的「删除」用分隔线隔开单独一组、并标成 destructive。
+    @ViewBuilder
+    private func messageMenu(_ entry: ChatEntry) -> some View {
+        Button {
+            quoting = ChatStore.quote(from: entry)
+        } label: {
+            Label("引用", systemImage: "quote.opening")
+        }
+
+        if !entry.text.isEmpty {
+            Button {
+                UIPasteboard.general.string = entry.text
+                toast = "已复制"
+            } label: {
+                Label("复制", systemImage: "doc.on.doc")
+            }
+
+            if entry.role == .assistant {
+                Button {
+                    SpeechPlayer.toggle(entry.text)
+                } label: {
+                    Label("朗读", systemImage: "speaker.wave.2")
+                }
+            }
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            hapticWarning += 1
+            removeEntry(entry.id)
+        } label: {
+            Label("删除", systemImage: "trash")
+        }
     }
 
     /// 受控的 Markdown：粗体、行内代码、列表、引用这些会正常显示；
@@ -418,36 +509,8 @@ struct ChatView: View {
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// 助手消息下面那排小按钮：复制、朗读、删除
-    private func actionRow(_ entry: ChatEntry) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                UIPasteboard.general.string = entry.text
-                toast = "已复制这条回复"
-            } label: {
-                Image(systemName: "doc.on.doc")
-            }
-            .accessibilityLabel("复制这条回复")
-
-            Button {
-                SpeechPlayer.toggle(entry.text)
-            } label: {
-                Image(systemName: "speaker.wave.2")
-            }
-            .accessibilityLabel("朗读这条回复")
-
-            Button {
-                hapticWarning += 1
-                removeEntry(entry.id)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .tint(.red)
-            .accessibilityLabel("删除这条回复")
-        }
-        .font(.body)
-        .buttonStyle(.borderless)
-    }
+    /// 助手消息下面那排小按钮（复制、朗读、删除）已经撤掉，动作改走长按菜单。
+    /// 这一页里凡是「一条消息能做什么」，去 messageMenu 里找。
 
     // MARK: - 输入栏
 
@@ -465,6 +528,8 @@ struct ChatView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
             }
+
+            if let quote = quoting { quotingBar(quote) }
 
             if !attachments.isEmpty { attachmentStrip }
 
@@ -528,6 +593,39 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 6)
+    }
+
+    /// 输入框上面的「正在引用谁」条，发出去或点叉就收掉
+    private func quotingBar(_ quote: ChatQuote) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "quote.opening")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("回复\(quote.author)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(quote.displayText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button {
+                quoting = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(.secondary, Color(uiColor: .tertiarySystemFill))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("取消引用")
+        }
+        .padding(.leading, 8)
+        .background(Color(uiColor: .tertiarySystemFill),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var attachmentStrip: some View {
@@ -713,11 +811,14 @@ struct ChatView: View {
         let dataURLs = attachments.map { "data:image/jpeg;base64,\($0.data.base64EncodedString())" }
         var user = ChatEntry(role: .user, text: text)
         user.images = attachments.compactMap { chats.saveImage($0.data) }
+        user.quote = quoting
+        let quote = quoting
+        quoting = nil
         draft = ""
         attachments = []
         chats.append(user, to: threadID)
 
-        dispatch(text: text, dataURLs: dataURLs)
+        dispatch(text: text, dataURLs: dataURLs, quote: quote)
     }
 
     /// 失败重试：把上一条用户消息原样再发一次（图片从磁盘读回来，不丢图）
@@ -732,11 +833,11 @@ struct ChatView: View {
             return "data:image/jpeg;base64,\(data.base64EncodedString())"
         }
         removeEntry(assistantEntryID)
-        dispatch(text: userEntry.text, dataURLs: dataURLs)
+        dispatch(text: userEntry.text, dataURLs: dataURLs, quote: userEntry.quote)
     }
 
     /// 真正发请求的那一段。send 和 retry 都走这里。
-    private func dispatch(text: String, dataURLs: [String]) {
+    private func dispatch(text: String, dataURLs: [String], quote: ChatQuote? = nil) {
         guard let config = config() else { return }
 
         let thinking = ChatEntry(role: .assistant, text: "", state: .thinking)
@@ -753,6 +854,7 @@ struct ChatView: View {
                                                           images: dataURLs,
                                                           history: history,
                                                           memory: memory,
+                                                          quote: quote,
                                                           config: config)
                 await MainActor.run { apply(result, to: thinking.id, error: nil) }
             } catch {

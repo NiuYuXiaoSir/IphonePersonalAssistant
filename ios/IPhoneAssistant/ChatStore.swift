@@ -1,6 +1,47 @@
 import Foundation
 import UIKit
 
+/// 一条消息引用的另一条消息（微信那种「引用」）。
+///
+/// 存的是**快照**而不是只存 id：被引用的那条删掉之后，引用块还得看得见，
+/// 不然屏幕上会出现一个点不开、也读不懂的空框。
+/// id 也留着，点引用块能跳回原消息。
+struct ChatQuote: Codable, Equatable {
+    var entryID: String = ""
+    /// 「你」或「助理」
+    var author: String = ""
+    var text: String = ""
+    /// 引用的是一条只有图片/视频的消息
+    var isImage: Bool = false
+
+    /// 引用块里显示的那一行
+    var displayText: String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return isImage ? "[图片]" : "（空消息）"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case entryID, author, text, isImage
+    }
+
+    init(entryID: String = "", author: String = "", text: String = "", isImage: Bool = false) {
+        self.entryID = entryID
+        self.author = author
+        self.text = text
+        self.isImage = isImage
+    }
+
+    /// 和 ChatEntry 一样手写解码：旧数据里没有这个字段，不能让它把整条消息读崩
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        entryID = (try? c.decode(String.self, forKey: .entryID)) ?? ""
+        author = (try? c.decode(String.self, forKey: .author)) ?? ""
+        text = (try? c.decode(String.self, forKey: .text)) ?? ""
+        isImage = (try? c.decode(Bool.self, forKey: .isImage)) ?? false
+    }
+}
+
 /// 对话里的一条消息。
 ///
 /// 速记对话整个就是一段和助手的对话：用户说的话、助手整理出的条目卡片、
@@ -24,6 +65,8 @@ struct ChatEntry: Codable, Identifiable {
     var text: String = ""
     /// 附图文件名，图片实体存在 Documents/chatImages/ 下
     var images: [String] = []
+    /// 这条消息引用（回复）了哪一条
+    var quote: ChatQuote?
     /// 助手整理出来的条目卡片；写进系统之后置空
     var items: [ParsedItem]?
     /// 写回系统后的结果摘要
@@ -44,7 +87,7 @@ struct ChatEntry: Codable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, images, items, result, remembered, writtenKinds, state, busy, createdAt
+        case id, role, text, images, quote, items, result, remembered, writtenKinds, state, busy, createdAt
     }
 
     /// 手写解码，理由和 ParsedItem 一样：这份 JSON 要长期留在手机上，
@@ -55,6 +98,7 @@ struct ChatEntry: Codable, Identifiable {
         role = (try? c.decode(Role.self, forKey: .role)) ?? .assistant
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
         images = (try? c.decode([String].self, forKey: .images)) ?? []
+        quote = try? c.decodeIfPresent(ChatQuote.self, forKey: .quote)
         items = try? c.decodeIfPresent([ParsedItem].self, forKey: .items)
         result = try? c.decodeIfPresent(String.self, forKey: .result)
         remembered = (try? c.decode([String].self, forKey: .remembered)) ?? []
@@ -403,6 +447,14 @@ final class ChatStore: ObservableObject {
         return cleaned.count <= 16 ? cleaned : String(cleaned.prefix(16)) + "…"
     }
 
+    /// 把一条消息拍成引用块
+    static func quote(from entry: ChatEntry) -> ChatQuote {
+        ChatQuote(entryID: entry.id,
+                  author: entry.role == .user ? "你" : "助理",
+                  text: entry.text,
+                  isImage: !entry.images.isEmpty)
+    }
+
     // MARK: - 分组
 
     func folder(id: String?) -> ChatFolder? {
@@ -485,6 +537,10 @@ final class ChatStore: ObservableObject {
             var body = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if body.isEmpty && !entry.images.isEmpty {
                 body = "（发了一张图片，内容已经抽取过）"
+            }
+            // 引用要带进上下文：用户是在对着那句回话，「第二条改成周五」指的就是它
+            if let quote = entry.quote {
+                body = "（引用\(quote.author)说的「\(String(quote.displayText.prefix(120)))」）" + body
             }
             if let items = entry.items, !items.isEmpty {
                 let list = items.map { item -> String in

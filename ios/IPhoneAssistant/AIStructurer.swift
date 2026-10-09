@@ -146,6 +146,7 @@ enum AIStructurer {
     7. 如果整段内容里没有任何可执行的事，返回 "items": []。
     8. 如果带了图片，先把图里的内容读出来（可能是白板照片、纸质笔记、聊天截图、名片、手写便签），把其中提到的待办、时间、人名一并抽取。用户只发一张图、没配文字时，图里的内容就是全部输入，不要因为用户没打字就返回空数组：图里哪怕只有一句“明天交周报”，也要抽成一条待办。图里的字看不清就不要猜，宁可不抽。
     9. 如果用户是在改上一条结果（比如“第二条改成周五下午”“不要第一条了”），要结合【这一段对话】里已经列出的条目，把改完之后的完整清单重新输出一遍，不要只输出改动的那一条，也不要漏掉没被改动的条目。
+    10. 用户可能会**引用**某一条消息再说话（输入里会带一段【被引用的那条】）。那说明他在对着那句话回话：句里的指代（“这条”“你说的”“上面那个”）以被引用的那条为准，不要理解成别的消息。
 
     【remember】把以后还用得上的信息记下来。这是以后回答「我这一天做了什么」「明天要做什么」的唯一依据，所以用户说的事都要落进来。kind 只有这几种：
        - done：用户刚做完 / 今天做了什么（“上午去看了桥杆”“跟老王通了电话”）
@@ -169,11 +170,12 @@ enum AIStructurer {
 
     /// 调一次模型：回复 + 条目 + 记忆。
     /// history 是这一段对话最近的往来，memory 是记忆库给的相关上下文（长期记忆 + 最近几天的流水），
-    /// 两者一起决定「接着上次聊」能不能接上。
+    /// 两者一起决定「接着上次聊」能不能接上。quote 是用户这次引用（回复）的那条消息。
     static func parse(text: String,
                       images: [String] = [],
                       history: String = "",
                       memory: String = "",
+                      quote: ChatQuote? = nil,
                       config: LLMConfig) async throws -> AIResult {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var sections = ["现在是 \(nowDescription())。"]
@@ -182,6 +184,12 @@ enum AIStructurer {
         }
         if !history.isEmpty {
             sections.append("【这一段对话】\n\(history)")
+        }
+        if let quote {
+            sections.append("""
+            【被引用的那条】（用户正对着它回话，「这条」「你说的」指的是它）
+            \(quote.author)：\(String(quote.displayText.prefix(300)))
+            """)
         }
         sections.append("用户这次说的：\n\(body.isEmpty ? "（内容见附图）" : body)")
         let user = sections.joined(separator: "\n\n")
