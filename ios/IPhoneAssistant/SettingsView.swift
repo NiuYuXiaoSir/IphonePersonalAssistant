@@ -65,11 +65,17 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button(settings.isFetchingModels ? "拉取中…" : "拉取模型列表") {
-                        settings.fetchModels()
+                    HStack(spacing: 6) {
+                        // 拉模型列表是一次网络请求，只把文字换掉容易看成没反应
+                        if settings.isFetchingModels {
+                            ProgressView().controlSize(.small)
+                        }
+                        Button("拉取模型列表") {
+                            settings.fetchModels()
+                        }
+                        .font(.footnote)
+                        .disabled(settings.isFetchingModels)
                     }
-                    .font(.footnote)
-                    .disabled(settings.isFetchingModels)
                 }
                 modelChips
                 if !settings.modelListResult.isEmpty {

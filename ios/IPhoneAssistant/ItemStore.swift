@@ -287,14 +287,13 @@ final class ItemStore: ObservableObject {
     /// 单独拎出来是为了能在主线程算完再交给后台去排（`items` 只能在主线程读）。
     private func notificationPlan() -> [(item: AssistantItem, fire: Date)] {
         let now = Date()
-        return openItems
-            .compactMap { item -> (AssistantItem, Date)? in
-                guard item.notifies, let fire = item.fireDate, fire > now.addingTimeInterval(1) else { return nil }
-                return (item, fire)
-            }
-            .sorted { $0.1 < $1.1 }
-            .prefix(Self.maxScheduled)
-            .map { ($0.0, $0.1) }
+        var plan: [(item: AssistantItem, fire: Date)] = []
+        for item in openItems {
+            guard item.notifies, let fire = item.fireDate, fire > now.addingTimeInterval(1) else { continue }
+            plan.append((item: item, fire: fire))
+        }
+        plan.sort { $0.fire < $1.fire }
+        return Array(plan.prefix(Self.maxScheduled))
     }
 
     /// 整批重排通知。打开 App、改过任何一条、启动时都会走一遍。
