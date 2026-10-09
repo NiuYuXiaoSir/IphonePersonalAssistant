@@ -119,6 +119,12 @@
 
 界面决定一律以 **§12 的 Apple HIG 对标**为准——那里逐条列了标准的出处、原文和我们的偏差。本节的三条是工程约束，§12 是设计约束；两者冲突时，先看能不能同时满足，不能满足时以 §12 为准并把代价记进 §11。
 
+> **2026-10-09 追加（硬约束）：查标准的通道固定为 apple-dev MCP。** 所有界面相关的改动——视图、布局、颜色、字号、控件、动效、触觉、无障碍、权限文案——动手前先过它查 HIG 与技术文档，收工前用同一份内容复查最终实现。§12 里那些对标就是这条路走出来的，往后新增条款照 §12 的格式写（HIG 页面名 + 原文关键句 + 链接）。
+>
+> 四条用法：按 **HIG 页面名**查最准（`accessibility`、`buttons`、`layout`…），长句子会查到不相干的页面；HIG 没明文规定的一律标「HIG 未规定」，**不冒充标准**；改完重点复查 44×44 pt 热区、对比度、Dynamic Type 放大这三类可量化的；**MCP 用不了不算豁免**——改用 `node tools/check-apple-dev-mcp.mjs "<关键词>" ios` 查同一份内容，不许凭记忆编条款。
+>
+> 规矩与排查写在 `AGENTS.md`。
+
 ---
 
 ## 3. 用户与场景
@@ -769,6 +775,8 @@
 > **这一节是全文档的裁判。** 前面每一屏的规格，凡与这里冲突的，以这里为准。
 >
 > 依据：Apple 官方 Human Interface Guidelines（`developer.apple.com/design/human-interface-guidelines/<页面>`），2026-10 逐页核对。下面每条都注明了页面名和原文关键句，凡 HIG 没有明文规定的，一律标「HIG 未规定」，按工程判断处理——**不冒充标准**。
+>
+> 核对通道自 2026-10-09 起固定为 **apple-dev MCP**（`search_human_interface_guidelines` / `search_technical_documentation` / `search_unified`），用法见 §2.4 与 `AGENTS.md`。本节已有条款是它的产出；新增条款也必须由它核过再写进来。
 
 ### 12.1 硬指标：可以直接量的
 
@@ -948,8 +956,69 @@ HIG 要求：一句话说清**拿这个权限干什么**，主动语态、具体
 
 | 界面词 | 代码 | 落到哪 |
 |---|---|---|
-| 待办 | `todo` | 提醒事项「AI助理」列表 |
-| 日程 | `event` | 日历「AI助理」 |
-| 提醒 | `notification` | 本机通知（弹完即止） |
-| 备忘 | `note` | 本机 `notes.json` |
+| 待办 | `todo` | 本机 `items` 表；设了时间到点弹通知，可打勾 |
+| 日程 | `event` | 同上一张表；有开始时间和时长 |
+| 提醒 | `notification` | 同上一张表；响一下就完，不用打勾 |
+| 备忘 | `note` | 同上一张表；不提醒 |
+| 通知 | `items` + `UNUserNotificationCenter` | 数据库是事实，通知队列是它的影子（最多 56 条待弹） |
+| 附件（图片 / 视频） | `chat_entries.media` + `media` 表 | 文件在 `Documents/chatMedia/`，元信息在库 |
 | 长期记忆 / 每日流水 | `memories` / `timeline` | `Documents/assistant.sqlite3` |
+| 会议 | `meetings` 表 + `recordings/` | 音频必须是文件（要合并、要分享），元信息进了库 |
+
+---
+
+## 14. 实施记录（2026-10-09 第二批：引用 / 安排 / 去联动 / 视频 / 语音）
+
+这一批是六件事一起做的，逐条对应 `AGENTS.md` 那条硬约束：动界面前后用 **apple-dev MCP** 查证，
+结论带 HIG 页面名与原文；HIG 没写的标「未规定」，不冒充标准。
+
+### 14.1 做了什么
+
+| 需求 | 做法 | 落在哪 |
+|---|---|---|
+| 对话支持微信式「引用」 | 长按任意消息 → 「引用」→ 输入框上方出现引用条；气泡里那块引用带作者和那句话，点一下跳回原消息（原消息删了会明说）。引用会带进 prompt 的【被引用的那条】，「这条改成周五」才指得准 | `ChatStore.ChatQuote`、`ChatView.quotedBlock/quotingBar`、`AIStructurer` prompt 第 10 条 |
+| 拍照模式的按钮还是英文 | 根因不是没翻译，而是 App **一个本地化都没声明**，系统件（`UIImagePickerController` 的取消/重拍/使用照片、权限弹窗）就按开发语言英文渲染。声明 `zh-Hans` 之后系统件跟着变中文 | `ios/project.yml`（`CFBundleDevelopmentRegion` + `CFBundleLocalizations`）、`IPhoneAssistant/zh-Hans.lproj/` |
+| 对话界面太僵硬、复制/朗读/删除三个按钮突兀 | 整排图标撤掉，动作收进**长按菜单**（引用 / 复制 / 朗读 / 删除），破坏性动作用分隔线单独一组 | `ChatView.messageMenu` |
+| 要一份 App 安排的通知列表，能改时间、改备注、调顺序 | 新增「安排」页：待弹 / 已过时 / 没时间 / 已完成四段；点开一条改类型、标题、备注、时间、提前多久；左滑完成与删除（带 5 秒撤销）；「排序」可切按时间或手动，手动模式下拖动排序 | `ItemStore.swift`、`ScheduleView.swift`、`TodayView` 的「看全部安排」 |
+| 删掉与本机其他 App 的联动，全部走通知，数据用数据库管 | 删掉 `SystemWriter`（EventKit 写提醒事项/日历）与 `NoteStore`（notes.json）→ 新的 `ItemStore`（`items` 表）+ `ItemWriter`；通知是数据的影子，每次增删改按最近 56 条整批重排；通知上带「完成 / 延后 10 分钟」；Info.plist 里日历与提醒事项的权限声明一并删掉；诊断页去掉那两项探针 | `ItemStore`、`ItemWriter`、`NotificationService`、`AppRouter`（通知代理）、`SQLiteDatabase`（建表） |
+| 支持图片与视频 | 相册可多选图片与视频；视频有封面 + 时长 + 点开全屏播；发给模型时抽 4 帧并说明「这是视频里的画面」；文件进 `chatMedia/`，`media` 表记账 | `MediaStore.swift`、`ChatView`、`ChatStore.writeNow` |
+| 语音识别差，接第三方免费 | 「我的 → 语音识别」可选引擎：系统（端上，默认）/ Groq / 硅基流动 / 自定义（OpenAI 兼容的 `/audio/transcriptions`）；带「测试端点」（传 0.4 秒静音验证地址、密钥、模型名）；会议转写也跟着引擎走 | `SpeechSettings.swift`、`CloudSpeechService.swift`、`LiveSpeechRecognizer`、`TranscriptionService` |
+
+### 14.2 这一批依据的 HIG 条款（apple-dev MCP 查证）
+
+| 决定 | HIG 页面 + 原文 | 怎么落的 |
+|---|---|---|
+| 消息动作收进长按菜单 | **Menus**：「a context menu lets people access a small number of frequently used actions relevant to their current view or task」；**Gestures**：touch and hold 是标准手势（「Touch (or pinch) and hold … Reveal additional controls or functionality」） | 每条消息长按出菜单，顺序按「常用的放前面」，破坏性的删除用 `Divider()` 分组 + `role: .destructive` |
+| 长按菜单不能是唯一入口 | **Gestures**：自定义手势须「Not the only way to perform an important action in your app or game」；**Context menus**：「it's hidden by default, so people might not know it's there」 | 消息上的长按菜单是**系统手势**不是自定义手势；同一批动作在「安排」页里都有可见入口（点行编辑、左滑完成/删除、编辑表单里还有删除按钮）。**这一条是有意取舍**：用户明确要求撤掉常驻图标，代价是消息级动作只剩长按——如实记在这里 |
+| 通知要能不进 App 就处理 | **Notifications**：「Prefer actions that let people perform common, time-saving tasks that eliminate the need to open your app」；「a Calendar event notification provides a Snooze button」；「Prefer nondestructive actions」 | 通知带「完成」（写回 `items.is_done`）与「延后 10 分钟」（改 `due_at` 后重排），都不是破坏性动作 |
+| 通知措辞 | **Notifications**：「Write succinct, easy-to-read notification content. Use complete sentences, sentence case, and proper punctuation」；标题「Use title-style capitalization and no ending punctuation」 | 标题就是条目标题（用户自己写的），正文是备注，没备注时按类型给一句「日程开始了」「到点了，办完记得打勾」 |
+| 去掉日历/提醒事项权限声明 | **Privacy**：「Request access only to data that you actually need」 | 不再读写系统里的其他 App，两条 usage description 一起删掉（省得申请用不上的权限） |
+| 权限说明要具体、别含糊 | **Privacy**：purpose string 要「brief, complete sentence… avoid passive voice」；「Be transparent about how your app collects and uses people's data」 | 新权限文案没有新增；但**换引擎这件事本身就是隐私选择**，所以设置页把「选了第三方，语音会上传到这个地址」写在 footer 里，默认留在端上（呼应同页「Process data on the device where possible」） |
+| 点按热区 | **Buttons**：「a button needs a hit region of at least 44x44 pt」；**Accessibility**：iOS 默认 44×44、最小 28×28 | 条目勾选圈、附件删除叉、引用条上的取消叉都补到 44×44（`frame` + `contentShape`） |
+| 破坏性动作不给 primary role | **Buttons**：「Don't assign the primary role to a button that performs a destructive action, even if that action is the most likely choice」 | 录音页「结束并保存」从 `.borderedProminent` 改成 `.bordered` + 红 tint（原来是红的高亮按钮，等于把破坏性动作做成了主按钮） |
+| 能中断的流程要给出口 | **Progress indicators**：「let people halt processing」；「Let people know when halting a process has a negative consequence」 | 纪要生成补「停止」；录音收尾期间禁掉「关闭」并说明会丢最后一段 |
+| 不可撤销的动作要问一次 | **Alerts**：「when people take an uncommon destructive action that they can't undo, it's important to display an alert in case they initiated the action accidentally」 | 记忆页「清空长期记忆」「清空每日流水」以前点了就执行，现在三档清空都过 `confirmationDialog` |
+| 不能只靠颜色 | **Color**：「Avoid relying solely on color to differentiate objects, indicate interactivity, or communicate essential information」 | 余额偏低除橙色外还换成告警图标并加「偏低」字样；已过时的条目文案里写「时间已过」 |
+| 大字号要能换行 | **Layout**：「horizontally adjacent views may need to stack vertically to provide more space for text」（Support Dynamic Type） | 录音页五项统计、纪要顶部三段信息都改成 `ViewThatFits`（放不下自动竖排） |
+| 列表空态 | **Lists and tables** 页查不到空态明文，属工程判断（HIG 未规定具体组件） | 记忆页、安排页用 `ContentUnavailableView`：一句「这是什么」+ 下一步去哪儿 |
+| 字号下限与文本样式 | **Typography**：iOS「默认 17 pt、最小 11 pt」；**Accessibility**：「enlarge text by at least 200 percent」 | 条目卡片上写死的 8 pt 箭头改成 `.caption2`；新页面一律用系统文本样式 |
+
+**改动前用 MCP 查、改动后按同一批条款复查**：可量化三项的结论是——44×44 热区（新增的勾选圈与两个「×」已补，剩会议详情页的 ±15 秒与改名铅笔、三个工具栏 `…` 菜单的标签还没补，见 14.4）、对比度（新界面全部走系统语义色，无从自绘）、Dynamic Type（新页面无写死字号，两处横排改 `ViewFitting`）。
+
+### 14.3 与上一版行为不同的地方（要留意的）
+
+1. **待办/日程不再出现在系统提醒事项和日历里**。它们在本机数据库，通知是唯一的提醒通道。系统通知每个 App 只保留最近 64 条待弹，所以代码里只排最近 56 条，其余在 App 里看得到、前面弹完再补（回前台时重排一次）。
+2. **待办/日程/提醒都可以打勾完成后消失**（以前写完就管不着了）。
+3. **「顺带把语音上传到第三方」是默认关闭的**：默认仍是系统端上识别。要更准就在「我的 → 语音识别」里换引擎，换之前先点「测试端点」。
+4. **消息级动作只剩长按**（用户要求撤掉常驻图标），删除没有撤销——这一点是这批里唯一「按用户要求压过 HIG 建议」的地方。
+
+### 14.4 这批没做 / 要真机确认的
+
+| 项 | 为什么 |
+|---|---|
+| 会议详情页 ±15 秒、改名铅笔的 44×44 热区；三个工具栏 `…` 的 `accessibilityLabel` | 同一批审计查出来的小项，与本批功能无关，留下一轮（改一处即可，不必和这批混着推） |
+| 会议列表行 metaLine 最多拼 5 段、空态仍是灰字 | 观感项，HIG 未明文规定 |
+| 录音中打标记的轻触觉是否被麦克风拾取 | **要真机**：录一段只有环境音的内容，听底噪里有没有「咚」。有的话录音期间改成纯视觉反馈 |
+| 第三方语音识别的地址与模型名 | **要真机确认**：Groq 与硅基流动的文档站对抓取返回 403/404，我**没能核对到官方原文**，所以预设地址与模型名是「按 OpenAI 兼容约定填的默认值」，设置页里可改，并且专门做了「测试端点」——第一次用之前点一下就知道通不通 |
+| 长按菜单与 `textSelection` 的取舍 | 消息正文不再开「选择文字」（两个手势会互相盖住）。要局部选字的话，走长按菜单的「复制」整条，或去「安排」页复制 |
+
