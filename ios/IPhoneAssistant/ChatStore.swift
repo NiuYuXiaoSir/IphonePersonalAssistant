@@ -95,7 +95,6 @@ struct ChatEntry: Codable, Identifiable {
     }
 
     var hasAttachments: Bool { !media.isEmpty || !images.isEmpty }
-}
 
     private enum CodingKeys: String, CodingKey {
         case id, role, text, media, images, quote, items, result, remembered, writtenKinds, state, busy, createdAt
