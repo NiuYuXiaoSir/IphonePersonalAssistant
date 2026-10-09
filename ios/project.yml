@@ -56,6 +56,13 @@ targets:
         CFBundleDisplayName: 私人助理
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # 系统自带的界面（相机、照片选择器的按钮，要权限时的弹窗文字）按
+        # 「App 支持的语言」挑语言，而支持的列表来自这里。之前没声明过，
+        # 于是 App 被当成只有英文——相机页的「取消/重拍/使用照片」全是英文。
+        # 这个 App 的界面就是中文的，所以只声明中文：系统件跟着一起变中文。
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleLocalizations:
+          - zh-Hans
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
