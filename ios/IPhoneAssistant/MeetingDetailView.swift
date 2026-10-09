@@ -125,7 +125,7 @@ struct MeetingDetailView: View {
 
                 Text(clock(isScrubbing ? scrubValue : player.elapsedTotal))
                     .font(.footnote.monospacedDigit())
-                    .frame(width: 46, alignment: .leading)
+                    .frame(minWidth: 40, alignment: .leading)
 
                 Slider(value: $scrubValue, in: 0...max(player.totalDuration, 0.1)) { editing in
                     isScrubbing = editing
@@ -139,7 +139,7 @@ struct MeetingDetailView: View {
                      : "无音频")
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 52, alignment: .trailing)
+                    .frame(minWidth: 44, alignment: .trailing)
             }
 
             if player.loaded {
@@ -150,8 +150,11 @@ struct MeetingDetailView: View {
                     } label: {
                         Label("15 秒", systemImage: "gobackward.15")
                             .labelStyle(.iconOnly)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("后退 15 秒")
 
                     Button {
                         let target = min(player.totalDuration, player.elapsedTotal + 15)
@@ -160,8 +163,11 @@ struct MeetingDetailView: View {
                     } label: {
                         Label("15 秒", systemImage: "goforward.15")
                             .labelStyle(.iconOnly)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("前进 15 秒")
 
                     Spacer(minLength: 0)
 
@@ -176,7 +182,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    /// 纸上那行文档抬头：标题 + 时间 + 改名。四个页都用它，切过去不会像换了个页面。
+    /// 文档抬头：标题 + 时间 + 改名。四个页都用它，切过去不会像换了个页面。
     private func documentHeader(_ m: Meeting) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 10) {
@@ -191,6 +197,8 @@ struct MeetingDetailView: View {
                     Image(systemName: "pencil")
                         .font(.body)
                         .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("重命名")
@@ -429,6 +437,7 @@ struct MeetingDetailView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
+            .accessibilityLabel("更多操作")
         }
     }
 
