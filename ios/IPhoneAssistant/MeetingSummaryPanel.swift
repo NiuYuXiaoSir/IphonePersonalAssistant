@@ -306,7 +306,7 @@ struct MeetingSummaryPanel<Header: View>: View {
         Button {
             balance.refresh(settings: settings)
         } label: {
-            Text("余额 \(balance.chipText)")
+            Text(balance.isLow ? "余额偏低：" : "余额 \(balance.chipText)")
                 .font(.footnote)
                 .foregroundStyle(balance.isLow ? Color.orange : Color.secondary)
         }

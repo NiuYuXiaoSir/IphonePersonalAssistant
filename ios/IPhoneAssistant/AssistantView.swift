@@ -127,7 +127,11 @@ struct AssistantView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(liveASR.isRunning ? "停止语音输入" : "开始语音输入")
             }
-            if liveASR.isRunning {
+            if liveASR.isTranscribing {
+                Label("正在识别…", systemImage: "waveform")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if liveASR.isRunning {
                 Label("在听…说完点一下话筒停止", systemImage: "waveform")
                     .font(.caption)
                     .foregroundStyle(.secondary)

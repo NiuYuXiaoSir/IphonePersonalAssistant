@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AVFoundation
 
 /// 一条消息引用的另一条消息（微信那种「引用」）。
 ///
@@ -63,7 +64,9 @@ struct ChatEntry: Codable, Identifiable {
     var id: String = UUID().uuidString
     var role: Role = .user
     var text: String = ""
-    /// 附图文件名，图片实体存在 Documents/chatImages/ 下
+    /// 附件（图片、视频）。文件在 Documents/chatMedia/ 下，这里只记元信息。
+    var media: [ChatMedia] = []
+    /// 上一版只有图片，文件名存在这里（文件在 chatImages/）。保留是为了旧消息还能看。
     var images: [String] = []
     /// 这条消息引用（回复）了哪一条
     var quote: ChatQuote?
@@ -86,8 +89,16 @@ struct ChatEntry: Codable, Identifiable {
         self.state = state
     }
 
+    /// 这条消息的全部附件：新的 media 表 + 旧版本存在 images 里的图片
+    var allMedia: [ChatMedia] {
+        media + images.map { ChatMedia(kind: .image, fileName: $0, isLegacy: true) }
+    }
+
+    var hasAttachments: Bool { !media.isEmpty || !images.isEmpty }
+}
+
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, images, quote, items, result, remembered, writtenKinds, state, busy, createdAt
+        case id, role, text, media, images, quote, items, result, remembered, writtenKinds, state, busy, createdAt
     }
 
     /// 手写解码，理由和 ParsedItem 一样：这份 JSON 要长期留在手机上，
@@ -97,6 +108,7 @@ struct ChatEntry: Codable, Identifiable {
         id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
         role = (try? c.decode(Role.self, forKey: .role)) ?? .assistant
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
+        media = (try? c.decode([ChatMedia].self, forKey: .media)) ?? []
         images = (try? c.decode([String].self, forKey: .images)) ?? []
         quote = try? c.decodeIfPresent(ChatQuote.self, forKey: .quote)
         items = try? c.decodeIfPresent([ParsedItem].self, forKey: .items)
@@ -124,7 +136,9 @@ struct ChatThread: Codable, Identifiable {
         for entry in entries.reversed() where !entry.text.isEmpty {
             return entry.text
         }
-        return entries.contains { !$0.images.isEmpty } ? "（一张图片）" : ""
+        guard let last = entries.last(where: { $0.hasAttachments }) else { return "" }
+        if last.media.contains(where: { $0.isVideo }) { return "（一段视频）" }
+        return "（一张图片）"
     }
 }
 
@@ -135,8 +149,8 @@ struct ChatFolder: Codable, Identifiable {
     var createdAt: Date = Date()
 }
 
-/// 对话的本地存储：会话、分组、消息都在 SQLite 里（Documents/assistant.sqlite3），
-/// 图片还是按文件存在 chatImages/。
+/// 对话的本地存储：会话、分组、消息、附件元信息都在 SQLite 里（Documents/assistant.sqlite3），
+/// 附件实体（图片、视频）按文件存在 chatMedia/，数据库里 `media` 表记一行。
 ///
 /// 上一版把整份对话写在 chat.json 里。换成数据库是为了让对话和记忆库能互相查
 /// （比如「上周关于桥杆都说了什么」要跨会话翻），也免得每次改动都整份重写。
@@ -181,6 +195,7 @@ final class ChatStore: ObservableObject {
 
     // MARK: - 目录
 
+    /// 老版本的图片目录。新附件走 MediaLibrary（chatMedia/），这里只为了读旧消息。
     static func imagesDirectory() -> URL {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("chatImages", isDirectory: true)
@@ -188,10 +203,6 @@ final class ChatStore: ObservableObject {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         return dir
-    }
-
-    static func imageURL(named name: String) -> URL {
-        imagesDirectory().appendingPathComponent(name)
     }
 
     // MARK: - 读写
@@ -295,11 +306,12 @@ final class ChatStore: ObservableObject {
 
     /// 整份快照写回数据库，一个事务里完成，中途失败不会留下半份数据。
     /// 会话和分组只有几十条、消息几百条，整份重写的开销远小于维护增量同步的复杂度。
+    /// 附件顺手在 `media` 表里记一行（那份是账本：算占用、找孤儿都靠它）。
     private func writeNow() {
         pendingSave?.cancel()
         pendingSave = nil
         db.transaction {
-            db.exec("DELETE FROM chat_entries; DELETE FROM chat_threads; DELETE FROM chat_folders;")
+            db.exec("DELETE FROM chat_entries; DELETE FROM chat_threads; DELETE FROM chat_folders; DELETE FROM media;")
             for folder in folders {
                 db.run("INSERT INTO chat_folders(id, name, created_at) VALUES(?,?,?)",
                        [folder.id, folder.name, folder.createdAt.timeIntervalSince1970])
@@ -316,6 +328,16 @@ final class ChatStore: ObservableObject {
                           let payload = String(data: data, encoding: .utf8) else { continue }
                     db.run("INSERT INTO chat_entries(id, thread_id, payload, created_at) VALUES(?,?,?,?)",
                            [entry.id, thread.id, payload, entry.createdAt.timeIntervalSince1970])
+                    for item in entry.media {
+                        db.run("""
+                            INSERT OR REPLACE INTO media(id, kind, file_name, entry_id, thread_id,
+                                                         pixel_width, pixel_height, duration_seconds,
+                                                         bytes, created_at)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)
+                            """, [item.id, item.kind.rawValue, item.fileName, entry.id, thread.id,
+                                  item.pixelWidth, item.pixelHeight, item.durationSeconds,
+                                  item.bytes, entry.createdAt.timeIntervalSince1970])
+                    }
                 }
             }
         }
@@ -410,8 +432,8 @@ final class ChatStore: ObservableObject {
 
     private func purgeThread(_ thread: ChatThread) {
         for entry in thread.entries {
-            for name in entry.images {
-                try? FileManager.default.removeItem(at: Self.imageURL(named: name))
+            for item in entry.allMedia {
+                MediaLibrary.delete(item)
             }
         }
         AppLog.info("Chat", "删除会话「\(thread.title)」及其 \(thread.entries.count) 条消息")
@@ -419,14 +441,18 @@ final class ChatStore: ObservableObject {
 
     /// 重发 / 重试时要把原图读回来
     func imageData(named name: String) -> Data? {
-        try? Data(contentsOf: Self.imageURL(named: name))
+        let legacy = Self.imagesDirectory().appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: legacy.path) {
+            return try? Data(contentsOf: legacy)
+        }
+        return try? Data(contentsOf: MediaLibrary.directory().appendingPathComponent(name))
     }
 
     func clearThread(id: String) {
         guard let index = threads.firstIndex(where: { $0.id == id }) else { return }
         for entry in threads[index].entries {
-            for name in entry.images {
-                try? FileManager.default.removeItem(at: Self.imageURL(named: name))
+            for item in entry.allMedia {
+                MediaLibrary.delete(item)
             }
         }
         threads[index].entries = []
@@ -441,7 +467,8 @@ final class ChatStore: ObservableObject {
     static func title(from entry: ChatEntry) -> String {
         let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {
-            return entry.images.isEmpty ? "新对话" : "照片"
+            guard entry.hasAttachments else { return "新对话" }
+            return entry.media.contains(where: { $0.isVideo }) ? "视频" : "照片"
         }
         let cleaned = text.replacingOccurrences(of: "\n", with: " ")
         return cleaned.count <= 16 ? cleaned : String(cleaned.prefix(16)) + "…"
@@ -452,7 +479,7 @@ final class ChatStore: ObservableObject {
         ChatQuote(entryID: entry.id,
                   author: entry.role == .user ? "你" : "助理",
                   text: entry.text,
-                  isImage: !entry.images.isEmpty)
+                  isImage: entry.hasAttachments)
     }
 
     // MARK: - 分组
@@ -501,25 +528,26 @@ final class ChatStore: ObservableObject {
         threads.filter { $0.folderID == id }
     }
 
-    // MARK: - 图片
+    // MARK: - 附件
 
-    @discardableResult
-    func saveImage(_ data: Data) -> String? {
-        let name = UUID().uuidString + ".jpg"
-        do {
-            try data.write(to: Self.imageURL(named: name), options: .atomic)
-            return name
-        } catch {
-            AppLog.error("Chat", "保存附图失败：\(error.localizedDescription)")
-            return nil
-        }
+    /// 气泡和列表里的缩略图。视频取第一帧当封面。
+    /// 内存里缓存一份：列表滚动时反复解码视频帧会明显卡。
+    func thumbnail(for item: ChatMedia) -> UIImage? {
+        if let hit = thumbCache[item.id] { return hit }
+        let fileURL = MediaLibrary.url(for: item)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        let image = item.isVideo ? Self.videoPoster(url: fileURL) : UIImage(contentsOfFile: fileURL.path)
+        if let image { thumbCache[item.id] = image }
+        return image
     }
 
-    func thumbnail(named name: String) -> UIImage? {
-        if let hit = thumbCache[name] { return hit }
-        guard let image = UIImage(contentsOfFile: Self.imageURL(named: name).path) else { return nil }
-        thumbCache[name] = image
-        return image
+    private static func videoPoster(url: URL) -> UIImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 480, height: 480)
+        guard let cgImage = try? generator.copyCGImage(at: CMTime(seconds: 0.1, preferredTimescale: 600),
+                                                       actualTime: nil) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 
     // MARK: - 给模型看的上下文
@@ -535,8 +563,9 @@ final class ChatStore: ObservableObject {
         var lines: [String] = []
         for entry in recent {
             var body = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if body.isEmpty && !entry.images.isEmpty {
-                body = "（发了一张图片，内容已经抽取过）"
+            if body.isEmpty && entry.hasAttachments {
+                let video = entry.media.contains { $0.isVideo }
+                body = video ? "（发了一段视频，画面已经抽取过）" : "（发了一张图片，内容已经抽取过）"
             }
             // 引用要带进上下文：用户是在对着那句回话，「第二条改成周五」指的就是它
             if let quote = entry.quote {

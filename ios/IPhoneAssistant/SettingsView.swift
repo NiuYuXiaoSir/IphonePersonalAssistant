@@ -9,6 +9,7 @@ import UIKit
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsStore
     @ObservedObject private var balance = BalanceStore.shared
+    @ObservedObject private var speech = SpeechSettings.shared
 
     var body: some View {
         NavigationStack {
@@ -17,6 +18,7 @@ struct SettingsView: View {
                 balanceSection
                 credentialSection
                 testSection
+                speechSection
                 systemSection
                 interfaceSection
                 advancedSection
@@ -123,7 +125,7 @@ struct SettingsView: View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Image(systemName: balance.chipIcon)
+                    Image(systemName: balance.isLow ? "exclamationmark.triangle.fill" : balance.chipIcon)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Text(balance.report?.headline ?? "还没查到")
@@ -202,6 +204,60 @@ struct SettingsView: View {
         } footer: {
             Text("会真的向上面填的地址发一次请求。成功会显示模型的回复，失败会显示具体错误——包括服务端返回的原文，方便判断是地址填错了还是密钥不对。")
         }
+    }
+
+    // MARK: - 语音识别
+
+    /// 语音识别单独一张卡：它和对话用的模型是两个服务、两份密钥，
+    /// 混在一起填很容易把某家的 key 填到另一家上。
+    private var speechSection: some View {
+        Section {
+            Picker("引擎", selection: $speech.engine) {
+                ForEach(SpeechEngine.allCases) { engine in
+                    Text(engine.displayName).tag(engine)
+                }
+            }
+
+            if speech.engine != .system {
+                TextField("接口地址", text: $speech.baseURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                TextField("模型名", text: $speech.model)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                LabeledContent("密钥", value: speech.keyStatus)
+                SecureField("粘贴语音识别的密钥", text: $speech.apiKeyInput)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("保存密钥") { speech.saveAPIKey() }
+                    .disabled(speech.apiKeyInput.isEmpty)
+                if speech.hasKey {
+                    Button("清除密钥", role: .destructive) { speech.clearAPIKey() }
+                }
+
+                Button(speech.isTesting ? "测试中…" : "测试端点") { speech.testEndpoint() }
+                    .disabled(speech.isTesting)
+
+                if !speech.testResult.isEmpty {
+                    Text(speech.testResult)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+        } header: {
+            Text("语音识别")
+        } footer: {
+            Text(speechFooter)
+        }
+    }
+
+    private var speechFooter: String {
+        if speech.engine == .system {
+            return speech.engine.note + " 想识别得更准，把引擎换成第三方（会把手里的语音上传到对方服务器）——这一步由你选，默认不出手机。"
+        }
+        return speech.engine.note + "\n注意：选了第三方，听写和会议转写的语音都会上传到上面这个地址。密钥存在系统钥匙串里，不写进日志。"
     }
 
     // MARK: - 系统设置

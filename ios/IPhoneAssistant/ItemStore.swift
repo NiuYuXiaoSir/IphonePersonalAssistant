@@ -309,11 +309,12 @@ final class ItemStore: ObservableObject {
                 return
             }
             for entry in plan {
-                try? await NotificationService.schedule(identifier: Self.notificationPrefix + entry.item.id,
-                                                        title: entry.item.title,
-                                                        body: entry.item.notificationBody,
-                                                        at: entry.fire,
-                                                        category: Self.categoryIdentifier)
+                // 单条排不上（比如时刻刚好过去）不该打断整批
+                _ = try? await NotificationService.schedule(identifier: Self.notificationPrefix + entry.item.id,
+                                                            title: entry.item.title,
+                                                            body: entry.item.notificationBody,
+                                                            at: entry.fire,
+                                                            category: Self.categoryIdentifier)
             }
             AppLog.info("Item", "重排通知 \(plan.count) 条" + (skipped > 0 ? "（还有 \(skipped) 条超出系统的待弹上限，等前面弹完再排）" : ""))
         }

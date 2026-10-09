@@ -255,6 +255,29 @@ final class ProbeStore: ObservableObject {
 
     // MARK: - 报告
 
+    /// 附件占用：文件是按个存在 chatMedia/ 下的，数据库里 media 表记着账。
+    /// 两边对不上就说明有孤儿文件（通常是删除时没清干净），这一行是唯一能看出来的地方。
+    private func attachmentReport() -> String {
+        let disk = MediaLibrary.storageBytes()
+        let rows = AppDatabase.shared.query("SELECT COUNT(*) AS n, SUM(bytes) AS total FROM media")
+        let count = (rows.first?["n"] as? Int) ?? 0
+        // SUM 在空表上返回 NULL，而 query 遇 NULL 不写这个键
+        let bytes: Int
+        if let value = rows.first?["total"] as? Int {
+            bytes = value
+        } else if let value = rows.first?["total"] as? Double {
+            bytes = Int(value)
+        } else {
+            bytes = 0
+        }
+        let mb = { (value: Int) in String(format: "%.2f MB", Double(value) / 1024 / 1024) }
+        return """
+        磁盘上的文件: \(disk.files) 个，\(mb(disk.bytes))
+        数据库记的账: \(count) 个，\(mb(bytes))
+        \(disk.files == count ? "一致" : "⚠️ 不一致（可能有一次删除没清干净）")
+        """
+    }
+
     func buildReport() -> String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "-"
@@ -285,6 +308,9 @@ final class ProbeStore: ObservableObject {
         --- 录音 / 后台录音 ---
         \(recordStatus)
         已有录音文件: \(recordings.isEmpty ? "无" : recordings.joined(separator: ", "))
+
+        --- 附件（图片与视频）---
+        \(attachmentReport())
 
         --- 本地通知 ---
         \(notificationStatus)

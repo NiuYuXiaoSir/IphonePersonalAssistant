@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 import PhotosUI
+import AVFoundation
+import AVKit
 
 /// 一段对话：和助理说话，它把话里的待办、日程、备忘、提醒直接建出来。
 ///
@@ -45,6 +47,8 @@ struct ChatView: View {
     /// 点了引用块要跳到的那条消息。ScrollViewReader 的代理在 conversation 里，
     /// 所以这里只放个「要去哪」，由那边负责滚。
     @State private var scrollTarget: String?
+    /// 正在全屏播的那段视频
+    @State private var playingMedia: ChatMedia?
     /// 语音输入是「接着已经打的字往下说」，不是把输入框清空重来
     @State private var voicePrefix = ""
     /// 正在跑的请求。用来支持「停止」。
@@ -53,11 +57,19 @@ struct ChatView: View {
     @State private var hapticSuccess = 0
     @State private var hapticWarning = 0
 
-    /// 还没发出去的照片：先留在内存里，点发送时才落盘
+    /// 还没发出去的附件。图片先压成 JPEG 留在内存，视频先躺在相册给的临时文件里，
+    /// 点发送时才一起落盘到 chatMedia/。
     private struct Attachment: Identifiable {
         let id = UUID()
-        let data: Data
-        let image: UIImage
+        var kind: ChatMedia.Kind = .image
+        /// 图片：压好的 JPEG
+        var data: Data?
+        /// 图片：界面上的预览
+        var image: UIImage?
+        /// 视频：相册导出的临时文件
+        var videoURL: URL?
+        var durationSeconds: Double = 0
+        var pixelSize: CGSize = .zero
     }
 
     /// 一组消息 + 它上面要不要加日期分隔
@@ -96,14 +108,23 @@ struct ChatView: View {
         .photosPicker(isPresented: $showLibrary,
                       selection: $libraryItems,
                       maxSelectionCount: 4,
-                      matching: .images)
+                      matching: .any(of: [.images, .videos]))
         .onChange(of: libraryItems) { _, items in loadLibrary(items) }
+        .sheet(item: $playingMedia) { item in
+            VideoPlayerSheet(url: MediaLibrary.url(for: item))
+        }
         .onAppear {
             balance.refreshIfStale(settings: settings)
             if openCameraOnAppear { openCamera() }
         }
         .onChange(of: liveASR.liveText) { _, text in
             if liveASR.isRunning { draft = voicePrefix + text }
+        }
+        // 第三方引擎是「说完才出字」，最终文字走 transcript
+        .onChange(of: liveASR.transcript) { _, text in
+            guard !text.isEmpty else { return }
+            draft = voicePrefix + text
+            voicePrefix = ""
         }
         .onDisappear {
             if liveASR.isRunning { liveASR.stop() }
@@ -282,7 +303,7 @@ struct ChatView: View {
         HStack {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: 8) {
-                if !entry.images.isEmpty { imageStrip(entry.images) }
+                if entry.hasAttachments { mediaStrip(entry.allMedia) }
                 if !entry.text.isEmpty || entry.quote != nil {
                     VStack(alignment: .leading, spacing: 6) {
                         if let quote = entry.quote { quotedBlock(quote) }
@@ -339,23 +360,59 @@ struct ChatView: View {
         .accessibilityLabel("引用\(quote.author)说的：\(quote.displayText)。点按跳到那条消息")
     }
 
-    private func imageStrip(_ names: [String]) -> some View {
+    /// 气泡上的附件条：图片和视频缩略图。视频点一下全屏播。
+    private func mediaStrip(_ items: [ChatMedia]) -> some View {
         HStack(spacing: 6) {
-            ForEach(names, id: \.self) { name in
-                if let image = chats.thumbnail(named: name) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 88, height: 88)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            ForEach(items) { item in
+                if item.isVideo {
+                    Button {
+                        playingMedia = item
+                    } label: {
+                        mediaThumbnail(item)
+                    }
+                    .buttonStyle(.plain)
                 } else {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                        .frame(width: 88, height: 88)
-                        .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                    mediaThumbnail(item)
                 }
             }
         }
+    }
+
+    private func mediaThumbnail(_ item: ChatMedia) -> some View {
+        Group {
+            if let image = chats.thumbnail(for: item) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Rectangle()
+                    .fill(Color(uiColor: .tertiarySystemFill))
+                    .overlay(Image(systemName: item.isVideo ? "video" : "photo")
+                        .foregroundStyle(.secondary))
+            }
+        }
+        .frame(width: 88, height: 88)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            if item.isVideo {
+                ZStack {
+                    Image(systemName: "play.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white, .black.opacity(0.45))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    Text(item.durationText)
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .padding(5)
+                }
+            }
+        }
+        .accessibilityLabel(item.isVideo ? "视频，\(item.durationText)，点按播放" : "图片")
     }
 
     // MARK: - 助手消息
@@ -566,14 +623,20 @@ struct ChatView: View {
                 Button {
                     toggleVoice()
                 } label: {
-                    Image(systemName: liveASR.isRunning ? "waveform.circle.fill" : "waveform")
-                        .font(.title2)
-                        .foregroundStyle(liveASR.isRunning ? Color.red : Color.secondary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                        .symbolEffect(.variableColor, isActive: liveASR.isRunning)
+                    Group {
+                        if liveASR.isTranscribing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: liveASR.isRunning ? "waveform.circle.fill" : "waveform")
+                                .font(.title2)
+                                .foregroundStyle(liveASR.isRunning ? Color.red : Color.secondary)
+                                .symbolEffect(.variableColor, isActive: liveASR.isRunning)
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
                 }
-                .disabled(busy)
+                .disabled(busy || liveASR.isTranscribing)
                 .accessibilityLabel(liveASR.isRunning ? "停止语音输入" : "开始语音输入")
 
                 Button {
@@ -635,11 +698,7 @@ struct ChatView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(attachments) { item in
-                    Image(uiImage: item.image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 64, height: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    attachmentThumb(item)
                         .overlay(alignment: .topTrailing) {
                             Button {
                                 attachments.removeAll { $0.id == item.id }
@@ -652,13 +711,44 @@ struct ChatView: View {
                             }
                             .buttonStyle(.plain)
                             .padding(-6)
-                            .accessibilityLabel("移除这张照片")
+                            .accessibilityLabel(item.kind == .video ? "移除这段视频" : "移除这张照片")
                         }
                 }
             }
             .padding(.horizontal, 2)
             .padding(.vertical, 2)
         }
+    }
+
+    private func attachmentThumb(_ item: Attachment) -> some View {
+        Group {
+            if let image = item.image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Rectangle()
+                    .fill(Color(uiColor: .tertiarySystemFill))
+                    .overlay(Image(systemName: "video").foregroundStyle(.secondary))
+            }
+        }
+        .frame(width: 64, height: 64)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if item.kind == .video {
+                Text(Self.durationText(item.durationSeconds))
+                    .font(.caption2)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .padding(4)
+            }
+        }
+    }
+
+    private static func durationText(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        if total < 60 { return "\(total) 秒" }
+        return "\(total / 60):\(String(format: "%02d", total % 60))"
     }
 
     @ToolbarContentBuilder
@@ -694,7 +784,7 @@ struct ChatView: View {
                 if balance.isRefreshing {
                     ProgressView().controlSize(.mini)
                 } else {
-                    Image(systemName: balance.chipIcon).font(.caption)
+                    Image(systemName: balance.isLow ? "exclamationmark.triangle.fill" : balance.chipIcon).font(.caption)
                 }
                 Text(balance.chipText).font(.footnote)
             }
@@ -721,7 +811,8 @@ struct ChatView: View {
     }
 
     private var composerPlaceholder: String {
-        liveASR.isRunning ? "在听…" : "发消息或按住说话…"
+        if liveASR.isTranscribing { return "正在识别…" }
+        return liveASR.isRunning ? "在听…" : "发消息或按住说话…"
     }
 
     private func hideKeyboard() {
@@ -750,19 +841,47 @@ struct ChatView: View {
             toast = "这张照片读不出来（格式不支持）。"
             return
         }
-        attachments.append(Attachment(data: data, image: image))
+        attachments.append(Attachment(kind: .image,
+                                      data: data,
+                                      image: image,
+                                      pixelSize: image.size))
     }
 
+    /// 相册里选的可能是图片也可能是视频。视频按文件引用来（不把整段读进内存）。
     private func loadLibrary(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
         libraryItems = []
         Task {
             for item in items {
-                guard let raw = try? await item.loadTransferable(type: Data.self),
-                      let image = UIImage(data: raw) else { continue }
-                await MainActor.run { attach(image) }
+                if let movie = try? await item.loadTransferable(type: PickedMovie.self) {
+                    await attachVideo(url: movie.url)
+                    continue
+                }
+                if let raw = try? await item.loadTransferable(type: Data.self),
+                   let image = UIImage(data: raw) {
+                    await MainActor.run { attach(image) }
+                }
             }
         }
+    }
+
+    private func attachVideo(url: URL) async {
+        let asset = AVURLAsset(url: url)
+        let seconds = (try? await asset.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
+        var size = CGSize.zero
+        if let track = try? await asset.loadTracks(withMediaType: .video).first,
+           let natural = try? await track.load(.naturalSize) {
+            size = natural
+        }
+        guard seconds > 0.2 else {
+            toast = "这段视频读不出来（太短，或者格式不支持）。"
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        attachments.append(Attachment(kind: .video,
+                                      videoURL: url,
+                                      durationSeconds: seconds,
+                                      pixelSize: size))
     }
 
     private func toggleVoice() {
@@ -798,10 +917,10 @@ struct ChatView: View {
         voicePrefix = ""
         hideKeyboard()
 
-        // 图片先落盘，消息里只留文件名；发给模型时才读回来转 base64
-        let dataURLs = attachments.map { "data:image/jpeg;base64,\($0.data.base64EncodedString())" }
+        // 附件落盘，消息里只留元信息；发给模型时才读回来（视频抽帧）
+        let media = saveAttachments()
         var user = ChatEntry(role: .user, text: text)
-        user.images = attachments.compactMap { chats.saveImage($0.data) }
+        user.media = media
         user.quote = quoting
         let quote = quoting
         quoting = nil
@@ -809,26 +928,40 @@ struct ChatView: View {
         attachments = []
         chats.append(user, to: threadID)
 
-        dispatch(text: text, dataURLs: dataURLs, quote: quote)
+        dispatch(text: text, media: media, quote: quote)
     }
 
-    /// 失败重试：把上一条用户消息原样再发一次（图片从磁盘读回来，不丢图）
+    /// 附件落盘。图片是写文件，视频是从相册的临时文件拷进来（拷完把临时的删掉）。
+    private func saveAttachments() -> [ChatMedia] {
+        attachments.compactMap { item in
+            switch item.kind {
+            case .image:
+                guard let data = item.data else { return nil }
+                return MediaLibrary.saveImage(data, size: item.pixelSize)
+            case .video:
+                guard let url = item.videoURL else { return nil }
+                let saved = MediaLibrary.saveVideo(from: url,
+                                                   duration: item.durationSeconds,
+                                                   size: item.pixelSize)
+                try? FileManager.default.removeItem(at: url)
+                return saved
+            }
+        }
+    }
+
+    /// 失败重试：把上一条用户消息原样再发一次（附件从磁盘读回来，不丢图也不丢视频）
     private func retry(assistantEntryID: String) {
         guard let index = entries.firstIndex(where: { $0.id == assistantEntryID }),
               index > 0 else { return }
         let userEntry = entries[index - 1]
         guard userEntry.role == .user else { return }
 
-        let dataURLs: [String] = userEntry.images.compactMap { name in
-            guard let data = chats.imageData(named: name) else { return nil }
-            return "data:image/jpeg;base64,\(data.base64EncodedString())"
-        }
         removeEntry(assistantEntryID)
-        dispatch(text: userEntry.text, dataURLs: dataURLs, quote: userEntry.quote)
+        dispatch(text: userEntry.text, media: userEntry.allMedia, quote: userEntry.quote)
     }
 
     /// 真正发请求的那一段。send 和 retry 都走这里。
-    private func dispatch(text: String, dataURLs: [String], quote: ChatQuote? = nil) {
+    private func dispatch(text: String, media: [ChatMedia], quote: ChatQuote? = nil) {
         guard let config = config() else { return }
 
         let thinking = ChatEntry(role: .assistant, text: "", state: .thinking)
@@ -841,8 +974,11 @@ struct ChatView: View {
         sendTask?.cancel()
         sendTask = Task {
             do {
-                let result = try await AIStructurer.parse(text: text,
-                                                          images: dataURLs,
+                // 附件变成图：图片直接编码，视频抽四帧，并在文字里说明那是视频的画面
+                let payload = await Self.modelPayload(for: media)
+                let promptText = payload.note.isEmpty ? text : text + "\n" + payload.note
+                let result = try await AIStructurer.parse(text: promptText,
+                                                          images: payload.images,
                                                           history: history,
                                                           memory: memory,
                                                           quote: quote,
@@ -865,6 +1001,30 @@ struct ChatView: View {
     private func stopGenerating() {
         sendTask?.cancel()
         sendTask = nil
+    }
+
+    /// 附件 → 能发给模型的图（data URL）+ 一句说明。
+    ///
+    /// 网关只吃图片，视频没法直接发，所以抽几帧当画面。抽帧比整段视频省得多，
+    /// 而「拍一段白板 / 扫一眼现场」这类用途，四帧和整段给的信息差不多。
+    private static func modelPayload(for media: [ChatMedia]) async -> (images: [String], note: String) {
+        guard !media.isEmpty else { return ([], "") }
+        var images: [String] = []
+        var videoCount = 0
+        for item in media {
+            if item.isVideo {
+                videoCount += 1
+                for frame in await VideoFrames.extract(from: MediaLibrary.url(for: item)) {
+                    images.append("data:image/jpeg;base64,\(frame.base64EncodedString())")
+                }
+            } else if let data = try? Data(contentsOf: MediaLibrary.url(for: item)) {
+                images.append("data:image/jpeg;base64,\(data.base64EncodedString())")
+            }
+        }
+        let note = videoCount > 0
+            ? "（用户发来 \(videoCount) 段视频，下面的图片是视频里的画面，请按这些画面理解）"
+            : ""
+        return (images, note)
     }
 
     private func applyStopped(to id: String) {
@@ -1122,6 +1282,41 @@ private struct ItemsCard: View {
         let selected = items.filter { $0.include }
         guard !selected.isEmpty else { return "存下来" }
         return "存下（\(selected.count) 条）"
+    }
+}
+
+// MARK: - 视频播放
+
+/// 全屏播一段视频。用系统的 `VideoPlayer`：播放控件、全屏、画中画、AirPlay 都是系统给的，
+/// 自己画一套只会把「暂停」「拖动」这些人人都会的东西做坏。
+private struct VideoPlayerSheet: View {
+    let url: URL
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let player {
+                    VideoPlayer(player: player)
+                } else {
+                    ProgressView()
+                }
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .navigationTitle("视频")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .onAppear {
+            player = AVPlayer(url: url)
+        }
+        .onDisappear { player?.pause() }
     }
 }
 

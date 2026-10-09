@@ -65,8 +65,22 @@ enum TranscriptionService {
         SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))?.supportsOnDeviceRecognition ?? false
     }
 
-    /// 转写单个音频文件
+    /// 转写单个音频文件。
+    ///
+    /// 走哪条路由设置里的语音引擎决定：选了第三方就整段上传（准确率高得多，
+    /// 会议这种「事后要读纪要」的场景尤其明显），没配就用系统的端上识别。
     static func recognize(url: URL, onDevice: Bool) async throws -> String {
+        let speech = SpeechSettings.shared.makeConfig()
+        if speech.isCloud {
+            guard !speech.apiKey.isEmpty else {
+                throw TranscriptionError.notAuthorized("第三方语音识别还没配密钥")
+            }
+            return try await CloudSpeechService.transcribe(url: url, config: speech)
+        }
+        return try await recognizeWithApple(url: url, onDevice: onDevice)
+    }
+
+    private static func recognizeWithApple(url: URL, onDevice: Bool) async throws -> String {
         let status = SFSpeechRecognizer.authorizationStatus()
         guard status == .authorized else {
             throw TranscriptionError.notAuthorized(statusText(status))

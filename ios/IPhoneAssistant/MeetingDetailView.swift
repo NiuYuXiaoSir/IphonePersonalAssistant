@@ -441,7 +441,7 @@ struct MeetingDetailView: View {
                 if balance.isRefreshing {
                     ProgressView().controlSize(.mini)
                 } else {
-                    Image(systemName: balance.chipIcon).font(.caption)
+                    Image(systemName: balance.isLow ? "exclamationmark.triangle.fill" : balance.chipIcon).font(.caption)
                 }
                 Text(balance.chipText).font(.footnote)
             }

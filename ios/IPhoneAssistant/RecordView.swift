@@ -51,6 +51,9 @@ struct RecordView: View {
                             dismiss()
                         }
                     }
+                    // 收尾中退出会把最后一段丢掉，所以这时候不让按
+                    // （HIG Progress indicators：中断有代价时要说清楚）
+                    .disabled(phase == .finishing)
                 }
             }
             .onAppear(perform: onAppearAction)
@@ -99,16 +102,35 @@ struct RecordView: View {
     }
 
     private var statsBlock: some View {
-        HStack(spacing: 22) {
-            stat("已存段数", "\(recorder.segmentCount)")
-            stat("已转写", "\(transcriber.completedSegments)")
-            stat("文字", "\(transcriber.text.count)")
-            stat("标记", "\(recorder.markerCount)")
-            if transcriber.failedSegments > 0 {
-                stat("转写失败", "\(transcriber.failedSegments)")
+        // 五项横排，字号放大到 200% 一定会挤爆——放不下就自动改成两行
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 22) { statItems }
+            VStack(spacing: 10) {
+                HStack(spacing: 22) {
+                    stat("已存段数", "\(recorder.segmentCount)")
+                    stat("已转写", "\(transcriber.completedSegments)")
+                    stat("文字", "\(transcriber.text.count)")
+                }
+                HStack(spacing: 22) {
+                    stat("标记", "\(recorder.markerCount)")
+                    if transcriber.failedSegments > 0 {
+                        stat("转写失败", "\(transcriber.failedSegments)")
+                    }
+                }
             }
         }
         .padding(.top, 18)
+    }
+
+    @ViewBuilder
+    private var statItems: some View {
+        stat("已存段数", "\(recorder.segmentCount)")
+        stat("已转写", "\(transcriber.completedSegments)")
+        stat("文字", "\(transcriber.text.count)")
+        stat("标记", "\(recorder.markerCount)")
+        if transcriber.failedSegments > 0 {
+            stat("转写失败", "\(transcriber.failedSegments)")
+        }
     }
 
     private var transcribeToggle: some View {
@@ -153,7 +175,7 @@ struct RecordView: View {
             }
             // 自动纪要刚花掉一次 token，顺手把余额显示出来
             if balance.supports(settings) {
-                Text("余额 \(balance.chipText)")
+                Text(balance.isLow ? "余额偏低：" : "余额 \(balance.chipText)")
                     .font(.caption)
                     .foregroundStyle(balance.isLow ? Color.orange : Color.secondary)
             }
@@ -182,13 +204,17 @@ struct RecordView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
-                // 结束是危险动作，所以用红色；但它不是「主线按钮」，没有 primary role
-                prominent("结束并保存", icon: "stop.circle.fill", tint: .red) { finishAndSave() }
+                // 结束是破坏性动作：红色标出，但**不给** primary role。
+                // HIG 的 Buttons 页：「Don't assign the primary role to a button that performs
+                // a destructive action, even if that action is the most likely choice」——
+                // 所以走 .bordered + 红 tint，不用 .borderedProminent。
+                outlined("结束并保存", icon: "stop.circle.fill", tint: .red) { finishAndSave() }
             case .finishing:
                 ProgressView()
-                Text("正在收尾并等最后一段转写…")
+                Text("正在收尾并等最后一段转写…收尾期间先别退出，退了这一段会丢。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             case .done:
                 prominent("返回会议列表", icon: "list.bullet", tint: .accentColor) { dismiss() }
             }
@@ -204,6 +230,18 @@ struct RecordView: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .tint(tint)
+    }
+
+    /// 红色但不高亮：破坏性动作（结束并保存）
+    private func outlined(_ title: String, icon: String, tint: Color,
+                          action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
         .controlSize(.large)
         .tint(tint)
     }
