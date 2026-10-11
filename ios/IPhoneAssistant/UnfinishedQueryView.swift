@@ -13,6 +13,10 @@ import UIKit
 ///
 /// 上面那段话是模型生成的，所以：原始记录一并摆在下面（能核对、能追问「这条不对」），
 /// 整理结果可以选中复制，失败就说清失败、原始清单照样能看。
+///
+/// **整理是手动触发的**：打开这张表和换时间段都只重算本地清单，一次请求都不发——
+/// 要花 token 的事必须由用户自己点那一下（自动整理对 token 不友好，
+/// 用户明确要求改掉）。上次整理过的结果会从缓存里直接显示出来，也是不花钱的。
 struct UnfinishedQueryView: View {
 
     @EnvironmentObject private var settings: SettingsStore
@@ -58,9 +62,10 @@ struct UnfinishedQueryView: View {
                 // 清单要现算：记忆库的流水可能是别的页面改过的
                 memory.reload()
                 loadCache()
-                start()
+                // 这里**不**问模型：整理要花 token，等用户点「让助理整理」（缓存里有就直接显示）
             }
-            .onChange(of: range) { _, _ in start() }
+            // 换档位只清掉上一段的报错/停止提示，不发请求
+            .onChange(of: range) { _, _ in errorMessage = nil }
             .onDisappear { askTask?.cancel() }
             .toast($toast)
             .sensoryFeedback(.success, trigger: hapticSuccess) { _, _ in settings.hapticsEnabled }
@@ -83,7 +88,7 @@ struct UnfinishedQueryView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
         } footer: {
-            Text("\(range.summary())。换一段会自动重算，同一段不会重复问模型。")
+            Text("\(range.summary())。换一段只重算本地清单，不问模型；整理要点了按钮才发请求。")
         }
     }
 
@@ -96,36 +101,6 @@ struct UnfinishedQueryView: View {
                 Label("这段时间没有未完成的事项。", systemImage: "checkmark.circle")
                     .font(.body)
                     .foregroundStyle(.secondary)
-            } else if let report {
-                VStack(alignment: .leading, spacing: 10) {
-                    rendered(report.report)
-                        .font(.body)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                    HStack(spacing: 12) {
-                        Button {
-                            UIPasteboard.general.string = report.report
-                            toast = "已复制"
-                        } label: {
-                            Label("复制", systemImage: "doc.on.doc")
-                                .font(.footnote)
-                        }
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
-                        .controlSize(.small)
-
-                        Button {
-                            start(force: true)
-                        } label: {
-                            Label("重新整理", systemImage: "arrow.clockwise")
-                                .font(.footnote)
-                        }
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
-                        .controlSize(.small)
-                    }
-                }
-                .padding(.vertical, 2)
             } else if askingRange == range {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -139,15 +114,74 @@ struct UnfinishedQueryView: View {
                         .controlSize(.small)
                 }
                 .padding(.vertical, 2)
+            } else if let report {
+                VStack(alignment: .leading, spacing: 10) {
+                    rendered(report.report)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    // 缓存里的那份如果对不上现在的清单（打过勾、改过时间、加过条目），
+                    // 说清它是什么时候的，别让人拿一份过期的话当真
+                    if report.signature != digest.signature {
+                        HStack(alignment: .top, spacing: 5) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .padding(.top, 1)
+                            Text("本地清单变过了（打过勾、改过时间或加了新条目）。这份是 \(agoText(report.askedAt))整理的，点「重新整理」按现在的清单重算。")
+                                .font(.footnote)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button {
+                            UIPasteboard.general.string = report.report
+                            toast = "已复制"
+                        } label: {
+                            Label("复制", systemImage: "doc.on.doc")
+                                .font(.footnote)
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.small)
+
+                        Button {
+                            start()
+                        } label: {
+                            Label("重新整理", systemImage: "arrow.clockwise")
+                                .font(.footnote)
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.vertical, 2)
             } else if let errorMessage {
                 VStack(alignment: .leading, spacing: 8) {
                     Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("重试") { start(force: true) }
+                    Button("重试") { start() }
                         .buttonStyle(.bordered)
                         .buttonBorderShape(.capsule)
                         .controlSize(.small)
+                }
+                .padding(.vertical, 2)
+            } else {
+                // 还没整理过：等用户点这一下。花 token 的事不自动做
+                VStack(alignment: .leading, spacing: 8) {
+                    Button {
+                        start()
+                    } label: {
+                        Label("让助理整理", systemImage: "sparkles")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    Text("点一下会把下面这份清单发给模型，算一次用量。同一份清单不会再重复算。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 2)
             }
@@ -156,8 +190,6 @@ struct UnfinishedQueryView: View {
         } footer: {
             if digest.isEmpty {
                 Text("本地筛的是「安排」里到点没打勾的、没设时间的，以及记忆里写着「打算做」的。")
-            } else if report == nil && askingRange != range && errorMessage == nil {
-                Text("整理会把下面这份清单（标题、时间、备注）发给模型，其它数据留在本机。")
             } else if let report {
                 Text("这段话是 \(agoText(report.askedAt))整理的。它是模型按下面这份清单归纳的，核对以下面的记录为准。")
             }
@@ -266,15 +298,16 @@ struct UnfinishedQueryView: View {
         }
     }
 
-    // MARK: - 问模型
+    // MARK: - 问模型（只有用户点了按钮才会走到这里）
 
-    /// 换档位、刚打开都走这里
-    private func start(force: Bool = false) {
+    /// 用户点了「让助理整理」/「重新整理」/「重试」
+    private func start() {
         askTask?.cancel()
-        askTask = Task { await ask(force: force) }
+        askTask = Task { await ask() }
     }
 
-    /// 把上次整理的读回来（存在 UserDefaults 里，退出 App 也还在）
+    /// 把上次整理的读回来（存在 UserDefaults 里，退出 App 也还在）。
+    /// 读回来只是**显示**，不代表会重算——重算只发生在用户点按钮时。
     private func loadCache() {
         for candidate in UnfinishedRange.allCases {
             if let hit = UnfinishedReportCache.load(candidate) { reports[candidate] = hit }
@@ -291,27 +324,25 @@ struct UnfinishedQueryView: View {
     /// 真正问模型的那一段。标成 @MainActor：几个 @State 都在主线程上改
     /// （Task 是从来处继承 actor 的，不标就可能落到后台线程去改视图状态）。
     @MainActor
-    private func ask(force: Bool = false) async {
+    private func ask() async {
         let target = range
         guard !digest.isEmpty else { return }
-        let material = digest.material()
-        let signature = digest.signature
-        // 本地清单和上次整理时一模一样（没打勾、没加条目、没改时间）就直接用上次的，
-        // 不再花钱问一遍；变了或者按了「重新整理」才重新问
-        if !force, let hit = reports[target], hit.signature == signature { return }
         guard let config = config() else { return }
 
         askingRange = target
         errorMessage = nil
+        let material = digest.material()
         let rangeText = target.summary()
-        AppLog.info("Unfinished", "整理「\(range.label)」：逾期 \(digest.overdue.count)、没时间 \(digest.timeless.count)、计划 \(digest.plans.count) 条，材料 \(material.count) 字")
+        AppLog.info("Unfinished", "手动整理「\(range.label)」：逾期 \(digest.overdue.count)、没时间 \(digest.timeless.count)、计划 \(digest.plans.count) 条，材料 \(material.count) 字")
 
         do {
             let answer = try await AIStructurer.organize(material: material,
                                                          rangeText: rangeText,
                                                          config: config)
             guard !Task.isCancelled else { return }
-            let entry = UnfinishedReportCache(report: answer, signature: signature, askedAt: Date())
+            let entry = UnfinishedReportCache(report: answer,
+                                              signature: digest.signature,
+                                              askedAt: Date())
             reports[target] = entry
             entry.save(for: target)
             if range == target { hapticSuccess += 1 }
