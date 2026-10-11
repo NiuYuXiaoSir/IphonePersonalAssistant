@@ -317,8 +317,8 @@
 │ │  说一句话     ＋ 速记    拍照  │ │ ← 三个 .bordered 按钮
 │ ╰──────────────────────────────╯ │
 │ ╭───── 今天要做 ────────── 3 ───╮ │ ← Section header 尾部带数量
-│ │ 把报价单发给采购       15:00  │ │
-│ │ 跟老王过方案           16:30  │ │ ← 时间用 .secondaryLabel
+│ │ ○ 把报价单发给采购     15:00  │ │ ← 圈点一下就做完（44×44 热区）
+│ │ ○ 跟老王过方案         16:30  │ │ ← 时间用 .secondaryLabel
 │ ╰──────────────────────────────╯ │
 │ ╭───── 今天的流水 ─────────────╮ │ ← done + note
 │ │ 上午去厂里看了桥杆            │ │
@@ -328,7 +328,8 @@
 │ │ 供应商例会   42 分    未纪要   │ │ ← 真波形缩略 + 行尾 .badge
 │ ╰──────────────────────────────╯ │
 │ ╭───── 待弹通知 ────────── 1 ───╮ │
-│ │ 15:00 给供应商打电话          │ │
+│ │ ○ 给供应商打电话              │ │ ← 能打勾的直接打勾；重复的条目
+│ │   今天 15:00 · 还有 2 小时     │ │   写「每天 08:00」并挂循环箭头
 │ ╰──────────────────────────────╯ │
 └──────────────────────────────────┘
 ```
@@ -344,13 +345,17 @@
 
 **状态**：空（全空时只留主操作卡 + 一句「今天还没有记录」，并在下面给三个动作）／正常／有录音在进行中（主操作卡变红）
 
-**交互**：点余额胶囊刷新；点各行进入对应详情；模块为空时不占位置（不留空标题）
+**交互**：点余额胶囊刷新；点各行进入对应详情；模块为空时不占位置（不留空标题）；
+「今天要做」左边的圈 = 标成做完（那一条挪进「今天的流水」，5 秒撤销）；「待弹通知」里
+能打勾的直接打勾（等同通知上的「完成」按钮），重复的条目不给圈（见 §15）
 
 **验收**
 - [ ] 冷启动落在「今日」，首屏能看到「今天要做」和「今天的会」
 - [ ] 无任何记录时，首屏不是黑的：主操作卡 + 空态 + 三个动作都在
 - [ ] 点「开始记录会议」1 次点击进入录音并开录
 - [ ] 从「今日」能一步到：某条待办对应的对话、某场会议详情、通知列表
+- [ ] 「今天要做」里点圈 → 那一条出现在「今天的流水」，5 秒内点撤销能退回
+- [ ] 「待弹通知」里点圈 → 那条不再占着通知；带「每天」的那条是循环箭头、没有圈
 
 ### 7.2 会议列表
 
@@ -540,11 +545,16 @@
 5. `toast` 改 `YBToast`（复制、朗读这类不再弹 Alert）。
 6. **「停止生成」**：正在等回复时，把转圈换成「停止」，HIG 的 Progress indicators 页要求「let people halt processing」。停掉后保留已经收到的内容并标一句「已停止」。
 7. **（P2）流式回复**：`stream: true` 逐字出结果，替换「正在整理…」的转圈。三家网关兼容性不同，先只对 OpenAI 兼容路径做，失败回退非流式。
+8. **条目直接落库，那张卡片变成「监督面板」**（2026-10-11 第三批）：模型一回来条目就写进「安排」，不再要用户点「存下」。卡片上改标题 / 时间 / 类型 / 重复 → 同步改库里那一行；点左边的圈 → 从「安排」里删掉（再点一下加回来）；存不下的（缺时间、时间认不出）原因写在那一行上，改完自动重试。用户说「第二条改成周五」时模型会把整份清单重列一遍，所以 prompt 要求回带 `existing_item_id`（客户端拿它对上就改、对不上才新建），否则会重复建。详见 §15。
 
 **验收**
 - [ ] 模型回复里的 `**粗体**` 和 `- 列表` 正常显示，不出现星号
 - [ ] 失败的一条能一键重试，且不会重复建条目
 - [ ] 复制回复时是浮层提示，不是系统弹窗
+- [ ] 说一句带时间的话，条目**不用点任何按钮**就出现在「安排」里
+- [ ] 在那张卡片上改时间/标题，切到「安排」看，改的是同一行而不是多出一行
+- [ ] 点卡片左边的圈 → 那条从「安排」里消失；再点一下 → 又回来（还是原来那类动作）
+- [ ] 「每天八点提醒我喝水」建出来的是重复提醒：列表里写「每天 08:00」，通知天天响
 
 ### 7.9 记忆
 
@@ -900,6 +910,8 @@ HIG 要求：一句话说清**拿这个权限干什么**，主动语态、具体
 - **取消已排期的本地通知**：`notifications` 页没讲怎么取消未弹出的通知，属于 API 层的事。
 - **44×44 的出处**：`layout` 页**没有**这个数字（那个页面一条 iOS 数值都没给），它出自 `buttons`（44×44）和 `accessibility`（默认 44×44、最小 28×28）。
 - **上架合规**：App Store 审核指南 2.5.14 要求录音类 App 必须「明确告知并获得同意 + 有可见的录音指示」。本 App 侧载、不上架，不受这条约束；界面上「正在录音」的状态一直是可见的，顺手满足。
+- **重复提醒的「今天这一次做完了」**：`notifications` 页没有任何一句讲「重复提醒的完成语义」（它讲的是推送本身的好坏），属于产品判断。本批按「重复 = 常设提醒，不打勾」处理，理由与代价写在 §15.3。
+- **对话条目「先建后改」还是「先确认再建」**：HIG 没有一条讲「AI 建条目要不要用户确认」。`alerts` 页只说「不要用弹窗报信息、可撤销的动作不要弹窗」；本批把「确认」换成「直接建 + 卡片可改可撤」是**用户明确要求**的取舍，依据是 `alerts` 那句「they can undo the action」，不是「Apple 要求直接建」。
 
 ### 12.7 这一节带来的批次调整
 
@@ -1021,4 +1033,59 @@ HIG 要求：一句话说清**拿这个权限干什么**，主动语态、具体
 | 录音中打标记的轻触觉是否被麦克风拾取 | **要真机**：录一段只有环境音的内容，听底噪里有没有「咚」。有的话录音期间改成纯视觉反馈 |
 | 第三方语音识别的地址与模型名 | **要真机确认**：Groq 与硅基流动的文档站对抓取返回 403/404，我**没能核对到官方原文**，所以预设地址与模型名是「按 OpenAI 兼容约定填的默认值」，设置页里可改，并且专门做了「测试端点」——第一次用之前点一下就知道通不通 |
 | 长按菜单与 `textSelection` 的取舍 | 消息正文不再开「选择文字」（两个手势会互相盖住）。要局部选字的话，走长按菜单的「复制」整条，或去「安排」页复制 |
+
+---
+
+## 15. 实施记录（2026-10-11 第三批：重复提醒 / 对话直建 / 今日打勾）
+
+这一批是三件用户提的问题一起做，逐条对应 `AGENTS.md` 那条硬约束：动界面前后用 **apple-dev MCP** 查证，
+结论带 HIG 页面名与原文；HIG 没写的标「未规定」，不冒充标准。
+
+用户原话（三个问题）：
+
+1. 「提醒设置为每天提醒的时候不能让我正确的读取到是每天提醒我的，列表中应该体现这条提醒是每天都会执行的。」
+2. 「对话模式建立通知时不应我手动确认，应该由 ai 分辨创建什么种类的提醒，并且直接创建，我只需要监督，必要时手动修改一下就行。」
+3. 「在今日页面中我想标记已经完成的事项，但是做不到。」
+
+### 15.1 做了什么
+
+| 需求 | 做法 | 落在哪 |
+|---|---|---|
+| 每天提醒要真是每天、列表里也要看得出来 | `items` 表加 `repeat_rule`（`''`/`daily`/`weekdays`/`weekly`/`monthly`，老库 `ALTER TABLE` 补列）。重复的条目**不再**排一次性通知，改成系统的日历触发器 `UNCalendarNotificationTrigger(dateMatching:repeats:true)`——系统自己按日历循环，App 不在前台也照响；「工作日」拆成周一到周五五条触发器。列表里写「**每天 08:00** · 还有 3 小时 · 一直提醒」并在行首挂循环箭头；今日页的待弹提醒同样；通知正文缀「（每天 08:00）」。编辑表单加「重复」一栏，`AIStructurer` 的 prompt 加 `repeat` 字段与判别规则（「每天」「周一到周五」「每周三」「每月1号」→ 对应规则；重复的条目**必须**有 `due_date`，写**下一次**的绝对时刻） | `ItemStore.RepeatRule`、`AssistantItem.repeatRule/baseFireDate/fireDate/repeatText`、`NotificationService.scheduleRepeating`、`SQLiteDatabase.migrate`、`ScheduleView`（metaLine / 行首图标 / 编辑表单）、`TodayView.noticeLine`、`AIStructurer`（schema + 规则 11 + `repeatRule(fromText:)`） |
+| 对话里建东西不用手动确认 | 模型一回来 `apply()` 直接调 `autosave()` 落库（一条失败不拖垮其余）。那张卡片从「草稿 + 存下按钮」变成**监督面板**：改字段 → 同步改库里那一行（0.6 秒合并，免得每敲一个字重排一次通知）；点圈 → 撤下（删掉那一行）或加回来；存不下的原因（缺时间、时间认不出）写在那一行上，改完自动重试。为避免「改上一条」变成重复建：`historyText` 带上每条已落库条目的 `item_id`，prompt 要求把改动的那几条用 `existing_item_id` 抄回来，客户端对得上就**改**那一行 | `ChatView.apply/autosave/save/toggleInclude/applyEdits/refreshStatus`、`ItemsCard`（重写）、`ItemWriter.makeItem(from:existing:source:)`、`ParsedItem.savedItemID/existingItemID/saveError`、`ChatStore.historyText` |
+| 今日页要能打勾 | 「今天要做」每行左边是 44×44 的圈，点一下 → `MemoryStore.markPlanDone`（那一条从「计划」变成「做了」，挪进「今天的流水」），5 秒撤销可退回；「待弹的通知」里能打勾的直接打勾（等同通知上的「完成」），重复的条目不给圈（显示循环箭头）。两处都有触觉反馈（可在设置里关） | `TodayView.planSection/complete/undoComplete/noticeRow`、`MemoryStore.markPlanDone/undoPlanDone` |
+
+### 15.2 这一批依据的 HIG 条款（apple-dev MCP 查证）
+
+| 决定 | HIG 页面 + 原文 | 怎么落的 |
+|---|---|---|
+| 重复提醒交给系统循环，不在 App 里一天排一条 | **Notifications**：「Avoid sending multiple notifications for the same thing, even if someone hasn't responded. People attend to notifications at their convenience. If you send multiple notifications for the same thing, you fill up Notification Center」 | 「每天」只用一条待弹通知（日历触发器），不占那 56 条的名额；名额按**触发器条数**算，所以「工作日」的 5 条也在预算里 |
+| 通知要一眼看懂、能不进 App 就处理 | **Notifications**：「Provide concise, informative notifications」「timely, high-value information they can understand **at a glance**」；「Prefer actions that let people perform common, time-saving tasks that eliminate the need to open your app」 | 通知正文缀「（每天 08:00）」；一次性的条目照旧带「完成 / 延后 10 分钟」两个动作。**重复的条目不给动作按钮**——一条天天响的提醒没有「完成一次」这回事，给了反而是个假按钮 |
+| 打勾要有反馈、不能只靠颜色 | **Lists and tables**：「Provide appropriate feedback when people select a list item… a table that lists options often highlights a row only briefly before adding an image — such as a checkmark — indicating that the item is selected」；**Color**：「Avoid relying solely on color」 | 打勾后那一行**换区**（今天要做 → 今天的流水），不是只变个颜色；重复条目的循环箭头 + 「每天 08:00」是文字，不是纯色块 |
+| 打勾要能撤销 | **Alerts**：「Avoid displaying alerts for common, undoable actions, even when they're destructive. For example, you don't need to alert people about data loss every time they delete an email or file because they do so with the intention of discarding data, and **they can undo the action**」（撤销的一般依据见 §12.1 的 Undo and redo 一行，那次已核过） | 打勾后弹 5 秒撤销条，不弹确认框。**撤销条只挂在「计划 → 做事」这条路上**：流水里那些「今天打了电话」是用户自己说的做过的事，给它安一个「其实没做完」既不准确也没必要 |
+| 不能只靠手势 | **Accessibility**：「Offer alternatives to gestures. Make sure your UI's core functionality is accessible through more than one type of physical interaction… if you use a swipe gesture to dismiss a view, also make a button available」 | 打勾是**可见的圈**，不是「左滑完成」；左滑留在「安排」页那套里（那里同时保留长按菜单） |
+| 圈要够大 | **Buttons**：「a button needs a hit region of at least 44x44 pt」；**Accessibility**：iOS 默认 44×44、最小 28×28 | 计划行与通知行的圈都补到 44×44（`frame` + `contentShape`），圈本身仍画成小圆点 |
+| 结果写在原地，不弹提示 | **Alerts**：「**Avoid using an alert merely to provide information.** People don't appreciate an interruption from an alert that's informative, but not actionable. If you need to provide only information, prefer finding an alternative way to communicate it within the relevant context」 | 「已存下 N 条 / 没存下的原因」写在卡片和那一行上，不用 Alert 报成功（和 §12.1 的「弹窗不能当提示用」同一条） |
+| 「全部撤下」不做二次确认 | **Alerts**：同上面那条「Avoid displaying alerts for common, undoable actions… they can undo the action」 | 这个按钮本身就是可逆的（「全部加回」把条目按卡片上的内容重新建回来），再加一层确认等于多打断一次 |
+
+**改动前用 MCP 查、改动后按同一批条款复查**：可量化三项的结论是——44×44 热区（本批新增的三处圈全部 44×44；`AGENTS.md` 里那条「先查后写」照做）、对比度（新文案全部走系统语义色 + `.secondary`，没有自绘色）、Dynamic Type（新增文案都用系统文本样式，圈用 `.title3` 随字体缩放）。
+
+> 附注（不冒充标准）：`UNCalendarNotificationTrigger` 这一档 API 在本机 `apple-dev` 服务端的**技术文档索引里没有收录**（`search_technical_documentation` 查不到 UserNotifications 的符号；同一查询查 `ScrollView` 正常返回，所以不是检索坏了）。这条 API 的用法是按 UserNotifications 的既有约定写的，**未能在本次会话里核对到官方原文**——真机要确认「每天 8 点时能不能连响三天」。
+
+### 15.3 与上一版行为不同的地方（要留意的）
+
+1. **对话里说的话立刻就建**，不再有「先看看再存下」。模型抽错了也不会有确认挡着——请用卡片上的圈撤下，或去「安排」里删。这是用户明确要的取舍。
+2. **重复的条目不能打勾**（它是常设提醒，不是一次性的任务）：通知上没有「完成」，列表里没有完成动作，编辑表单里的「已完成」也会藏起来。要停下它只能删掉或改成「不重复」。
+3. **老库要加列**：`items.repeat_rule` 走 `ALTER TABLE` 补（不重建表，数据不动）。第一次启动会多一行「补列 items.repeat_rule」的日志。
+4. **「每天」的老数据不会自动变成重复**：以前建的「每天早上八点」在库里是一次性条目，得手动去「安排」里点开、把「重复」改成「每天」。旧数据没有这个信息，猜不出来。
+
+### 15.4 这批没做 / 要真机确认的
+
+| 项 | 为什么 |
+|---|---|
+| 「重复提醒的今天这一次做完了」这种按天打勾 | 需要给每条重复安排记「哪几天已完成」，是另一套数据（完成日志）。用户这次要的是「看得出来它是每天的、且真的每天响」，先只做这个 |
+| 「每周三」以外的多选星期（比如「周一和周四」） | 日历触发器一条只能匹配一组星期几；要做得像 iOS 日历那样多选，得多条 + 一套解析规则。现在覆盖「每天 / 工作日 / 每周某天 / 每月某日」四档 |
+| 重复提醒在锁屏上的「今天不再提醒」 | 需要 App 在后台被通知动作唤醒后改状态并重排，属于下一档（先不做按钮，比做一个不管用的按钮好） |
+| 真机确认：重复通知连响几天 | 见 15.2 末尾的附注——工具链里没有这条 API 的原文，模拟器/真机各挂一条「每天」的提醒看三天 |
+| 「今天要做」的圈会把计划挪进流水，而不是仅仅打勾 | 记忆库里「计划」和「做了」是同一张流水表的两种 kind，所以打勾 = 换 kind。好处是模型下次回答「今天做了什么」能看到它；代价是它不再出现在「今天要做」——这正是想要的 |
 
