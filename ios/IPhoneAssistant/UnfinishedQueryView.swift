@@ -55,6 +55,8 @@ struct UnfinishedQueryView: View {
                 }
             }
             .onAppear {
+                // 清单要现算：记忆库的流水可能是别的页面改过的
+                memory.reload()
                 loadCache()
                 start()
             }
@@ -81,7 +83,7 @@ struct UnfinishedQueryView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
         } footer: {
-            Text("这段时间：\(range.text())。换一段会自动重算，同一段不会重复问模型。")
+            Text("\(range.summary())。换一段会自动重算，同一段不会重复问模型。")
         }
     }
 
@@ -301,7 +303,7 @@ struct UnfinishedQueryView: View {
 
         askingRange = target
         errorMessage = nil
-        let rangeText = target.text()
+        let rangeText = target.summary()
         AppLog.info("Unfinished", "整理「\(range.label)」：逾期 \(digest.overdue.count)、没时间 \(digest.timeless.count)、计划 \(digest.plans.count) 条，材料 \(material.count) 字")
 
         do {

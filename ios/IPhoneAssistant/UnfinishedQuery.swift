@@ -16,7 +16,7 @@ enum UnfinishedRange: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// 分段控件上的标签（短、长度接近）
+    /// 分段控件上的标签（短、长度接近；HIG：各段内容大小尽量一致）
     var label: String {
         switch self {
         case .yesterday:   return "昨天"
@@ -24,6 +24,17 @@ enum UnfinishedRange: String, CaseIterable, Identifiable {
         case .week:        return "一周内"
         case .month:       return "一个月"
         case .threeMonths: return "三个月"
+        }
+    }
+
+    /// 完整说法（页脚里用）：分段控件上放不下，但用户嘴里说的就是这个
+    var fullLabel: String {
+        switch self {
+        case .yesterday:   return "昨天"
+        case .threeDays:   return "过去三天内"
+        case .week:        return "过去一周内"
+        case .month:       return "过去一个月内"
+        case .threeMonths: return "过去三个月内"
         }
     }
 
@@ -55,16 +66,22 @@ enum UnfinishedRange: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 「昨天（10月10日）」「10月5日 – 今天」这种说法
+    /// 「10月5日 – 今天」；昨天那档就是那一天
     func text(now: Date = Date(), calendar: Calendar = .current) -> String {
         let (start, _) = interval(now: now, calendar: calendar)
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "M月d日"
         switch self {
-        case .yesterday: return "昨天（\(f.string(from: start))）"
+        case .yesterday: return f.string(from: start)
         default:         return "\(f.string(from: start)) – 今天"
         }
+    }
+
+    /// 「过去一周内（10月5日 – 今天）」。页脚和给模型的那句话都用它：
+    /// 光写「一周内」各人有各人的理解，把算出来的日期摊开才算说清。
+    func summary(now: Date = Date(), calendar: Calendar = .current) -> String {
+        "\(fullLabel)（\(text(now: now, calendar: calendar))）"
     }
 }
 
