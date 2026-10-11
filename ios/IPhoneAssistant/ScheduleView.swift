@@ -90,10 +90,16 @@ struct ScheduleView: View {
             } header: {
                 Text("待弹的通知（\(list.count) 条）")
             } footer: {
-                if store.sortMode == .manual {
-                    Text("现在是手动顺序：按住右边的把手可以拖动。手动顺序只改这个列表怎么排，弹出时刻不变。")
-                } else {
-                    Text("按弹出时刻排。想自己排，用右上的「排序」切成手动。")
+                VStack(alignment: .leading, spacing: 4) {
+                    if store.sortMode == .manual {
+                        Text("现在是手动顺序：按住右边的把手可以拖动。手动顺序只改这个列表怎么排，弹出时刻不变。")
+                    } else {
+                        Text("按弹出时刻排。想自己排，用右上的「排序」切成手动。")
+                    }
+                    // 重复的条目在列表里写成「每天 08:00」；它会一直在，不会弹一次就没了
+                    if list.contains(where: { $0.isRepeating }) {
+                        Text("带「每天 / 工作日 / 每周 / 每月」的条目是重复提醒，由系统按规则一直响，不用管。")
+                    }
                 }
             }
         }
@@ -149,7 +155,8 @@ struct ScheduleView: View {
         ForEach(list) { item in
             row(item)
                 .swipeActions(edge: .leading) {
-                    if item.kind != .note {
+                    // 重复的条目是常设提醒，没有「完成一次」这回事（通知上也不给「完成」按钮）
+                    if item.kind != .note && !item.isRepeating {
                         Button {
                             store.setDone(id: item.id, done: !item.isDone)
                         } label: {
@@ -172,7 +179,7 @@ struct ScheduleView: View {
                     } label: {
                         Label("编辑", systemImage: "pencil")
                     }
-                    if item.kind != .note {
+                    if item.kind != .note && !item.isRepeating {
                         Button {
                             store.setDone(id: item.id, done: !item.isDone)
                         } label: {
@@ -200,9 +207,10 @@ struct ScheduleView: View {
             editing = item
         } label: {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: item.kind.symbol)
+                // 重复的条目在最左边就挂上循环箭头：一眼看出这条不是「响一次」
+                Image(systemName: item.isRepeating ? "repeat" : item.kind.symbol)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(item.isRepeating ? Color.accentColor : Color.secondary)
                     .frame(width: 20)
                     .padding(.top, 4)
 
@@ -234,11 +242,16 @@ struct ScheduleView: View {
         .accessibilityLabel("\(item.kind.label)：\(item.title)。\(metaLine(item))。点按编辑")
     }
 
-    /// 时间那行：说清「什么时候」和「还有多久」，不靠颜色
+    /// 时间那行：说清「什么时候」和「还有多久」，不靠颜色。
+    /// 重复的条目显示「每天 08:00」这种说法——「明天 08:00」看不出它天天都会响。
     private func metaLine(_ item: AssistantItem) -> String {
         var parts: [String] = []
         if let due = item.dueAt {
-            parts.append(ItemTimeText.when(due))
+            if let repeatText = item.repeatText {
+                parts.append(repeatText)
+            } else {
+                parts.append(ItemTimeText.when(due))
+            }
             if item.isDone {
                 parts.append("已完成")
             } else if let fire = item.fireDate {
@@ -247,6 +260,7 @@ struct ScheduleView: View {
         } else {
             parts.append("没有时间")
         }
+        if item.isRepeating { parts.append("一直提醒") }
         if item.remindBeforeMinutes > 0 { parts.append("提前 \(item.remindBeforeMinutes) 分钟提醒") }
         if item.kind == .event && item.durationMinutes > 0 {
             parts.append("\(item.durationMinutes) 分钟")
@@ -355,6 +369,13 @@ private struct ItemEditSheet: View {
                         if hasTime {
                             DatePicker("时间", selection: $dueDate,
                                        displayedComponents: [.date, .hourAndMinute])
+                            // 「每天八点」这种安排不能只变成一次提醒：重复规则存在条目上，
+                            // 通知交给系统日历触发器循环（列表里也会写成「每天 08:00」）
+                            Picker("重复", selection: $draft.repeatRule) {
+                                ForEach(RepeatRule.allCases, id: \.self) { rule in
+                                    Text(rule.pickerLabel).tag(rule)
+                                }
+                            }
                             Picker("提前提醒", selection: $draft.remindBeforeMinutes) {
                                 ForEach(remindOptions, id: \.self) { minutes in
                                     Text(minutes == 0 ? "到点" : "提前 \(minutes) 分钟").tag(minutes)
@@ -374,14 +395,12 @@ private struct ItemEditSheet: View {
                     } header: {
                         Text("提醒")
                     } footer: {
-                        Text(hasTime
-                             ? "到点会弹一条通知，上面能直接点「完成」或「延后 10 分钟」。"
-                             : "不设时间就不会提醒。")
+                        Text(timeFootnote)
                     }
                 }
 
                 Section {
-                    if draft.kind != .note {
+                    if draft.kind != .note && draft.repeatRule == .none {
                         Toggle("已完成", isOn: $draft.isDone)
                     }
                     Button {
@@ -425,10 +444,25 @@ private struct ItemEditSheet: View {
         }
     }
 
+    /// 提醒那一节的脚注：说清这条到底会怎么响
+    private var timeFootnote: String {
+        guard hasTime else { return "不设时间就不会提醒。" }
+        if draft.repeatRule != .none {
+            return "\(draft.repeatRule.text(anchor: dueDate)) 起，\(draft.repeatRule.label)都会提醒——重复由系统排，几天没打开 App 也照响。这种常设提醒没有「完成」，不想用了就删掉或改成不重复。"
+        }
+        return "到点会弹一条通知，上面能直接点「完成」或「延后 10 分钟」。"
+    }
+
     private var copyText: String {
         var text = draft.title
         if !draft.notes.isEmpty { text += "\n\(draft.notes)" }
-        if let due = effectiveDue { text += "\n\(ItemTimeText.when(due))" }
+        if let due = effectiveDue {
+            if draft.repeatRule != .none {
+                text += "\n\(draft.repeatRule.text(anchor: due))（一直重复）"
+            } else {
+                text += "\n\(ItemTimeText.when(due))"
+            }
+        }
         return text
     }
 
@@ -440,6 +474,9 @@ private struct ItemEditSheet: View {
         // 关表单时一次性落盘；期间没动过就不写
         var item = draft
         item.dueAt = effectiveDue
+        // 备忘不提醒，重复也没有意义；重复的条目没有「完成一次」这回事
+        if item.kind == .note || item.dueAt == nil { item.repeatRule = .none }
+        if item.repeatRule != .none { item.isDone = false }
         guard item != original else { return }
         ItemStore.shared.update(item)
     }

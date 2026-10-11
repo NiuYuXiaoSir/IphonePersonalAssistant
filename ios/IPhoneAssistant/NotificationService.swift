@@ -121,6 +121,80 @@ enum NotificationService {
         }
     }
 
+    // MARK: - 排重复通知
+
+    /// 排一条会**重复**的通知：每天 / 工作日 / 每周 / 每月。
+    ///
+    /// 和上面那条用时间间隔触发的不一样：这里用**日历触发器**（`repeats: true`），
+    /// 时间点交给系统，App 不在前台也照响——「每天八点」不能指望用户每天打开一次 App
+    /// 才会被重排一次。挂载的时刻模板取 `date` 的时/分（每周还取星期几、每月取日号），
+    /// `date` 要传**提醒时刻**（到点减掉提前量），不是日程本身的开始时刻。
+    ///
+    /// 「工作日」拆成五条（周一~周五各一条）：日历触发器一次只能匹配一组星期几，
+    /// 表达不了「周一到周五」。标识符形如 `xxx-0`…`xxx-4`，整批重排时按前缀一起撤掉。
+    static func scheduleRepeating(identifier: String,
+                                  title: String,
+                                  body: String,
+                                  rule: RepeatRule,
+                                  at date: Date,
+                                  category: String? = nil) async throws {
+        guard rule != .none else { return }
+        let center = UNUserNotificationCenter.current()
+        let calendar = Calendar.current
+        let hour = calendar.component(.hour, from: date)
+        let minute = calendar.component(.minute, from: date)
+
+        var slots: [DateComponents] = []
+        switch rule {
+        case .none:
+            return
+        case .daily:
+            var match = DateComponents()
+            match.hour = hour
+            match.minute = minute
+            slots = [match]
+        case .weekdays:
+            slots = (2...6).map { weekday in
+                var match = DateComponents()
+                match.hour = hour
+                match.minute = minute
+                match.weekday = weekday
+                return match
+            }
+        case .weekly:
+            var match = DateComponents()
+            match.hour = hour
+            match.minute = minute
+            match.weekday = calendar.component(.weekday, from: date)
+            slots = [match]
+        case .monthly:
+            var match = DateComponents()
+            match.hour = hour
+            match.minute = minute
+            match.day = calendar.component(.day, from: date)
+            slots = [match]
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        if !body.isEmpty { content.body = body }
+        content.sound = .default
+        if let category { content.categoryIdentifier = category }
+
+        for (index, match) in slots.enumerated() {
+            let requestID = slots.count == 1 ? identifier : "\(identifier)-\(index)"
+            let trigger = UNCalendarNotificationTrigger(dateMatching: match, repeats: true)
+            let request = UNNotificationRequest(identifier: requestID, content: content, trigger: trigger)
+            do {
+                try await center.add(request)
+            } catch {
+                AppLog.error("Notice", "安排重复通知失败：\(error.localizedDescription)")
+                throw ScheduleError.failed(error.localizedDescription)
+            }
+        }
+        AppLog.info("Notice", "排重复通知「\(title)」\(rule.label)，\(slots.count) 条触发器")
+    }
+
     // MARK: - 查看与取消
 
     /// 撤销一条（条目删掉、或者改了时间要重排）

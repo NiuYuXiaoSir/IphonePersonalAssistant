@@ -2,7 +2,7 @@ import Foundation
 
 /// AI 从一段自由文本里抽出来的一个可执行条目。
 /// 会随速记对话一起存进 chat.json，所以是 Codable。
-struct ParsedItem: Identifiable, Codable {
+struct ParsedItem: Identifiable, Codable, Equatable {
 
     enum Kind: String, Codable, CaseIterable {
         case todo
@@ -52,8 +52,18 @@ struct ParsedItem: Identifiable, Codable {
     var priority: String
     /// 提前几分钟提醒。0 = 到点就提醒；负数 = 没提，按到点算
     var remindBeforeMinutes: Int
+    /// 多久重复一次（每天 / 工作日 / 每周 / 每月）；none = 只提醒这一次
+    var repeatRule: RepeatRule
     /// 用户在确认界面上的勾选状态
     var include: Bool
+    /// 这一条已经存进「安排」之后，对应那一行的 id。空 = 还没存下（或存失败过）
+    var savedItemID: String?
+    /// 模型自己说的：这条是在改「安排」里已有的哪一行（形如 3F2A…）。
+    /// 用户说「第二条改成周五」时，模型会把整份清单重新列一遍——带了 id 才知道是**改**那条，
+    /// 而不是又建一条新的。认不出这个 id（早被删了）就当新条目处理。
+    var existingItemID: String?
+    /// 没存下的原因（要多少时间、时间认不出）。为空表示存下了。
+    var saveError: String?
 
     init(kind: Kind,
          title: String,
@@ -62,7 +72,11 @@ struct ParsedItem: Identifiable, Codable {
          durationMinutes: Int = 0,
          priority: String = "normal",
          remindBeforeMinutes: Int = 0,
-         include: Bool = true) {
+         repeatRule: RepeatRule = .none,
+         include: Bool = true,
+         savedItemID: String? = nil,
+         existingItemID: String? = nil,
+         saveError: String? = nil) {
         self.kind = kind
         self.title = title
         self.notes = notes
@@ -70,11 +84,16 @@ struct ParsedItem: Identifiable, Codable {
         self.durationMinutes = durationMinutes
         self.priority = priority
         self.remindBeforeMinutes = remindBeforeMinutes
+        self.repeatRule = repeatRule
         self.include = include
+        self.savedItemID = savedItemID
+        self.existingItemID = existingItemID
+        self.saveError = saveError
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, title, notes, dueDate, durationMinutes, priority, remindBeforeMinutes, include
+        case id, kind, title, notes, dueDate, durationMinutes, priority, remindBeforeMinutes,
+             repeatRule, include, savedItemID, existingItemID, saveError
     }
 
     /// 手写解码：合成的解码器遇到缺字段会直接抛错，
@@ -89,7 +108,11 @@ struct ParsedItem: Identifiable, Codable {
         durationMinutes = (try? c.decode(Int.self, forKey: .durationMinutes)) ?? 0
         priority = (try? c.decode(String.self, forKey: .priority)) ?? "normal"
         remindBeforeMinutes = (try? c.decode(Int.self, forKey: .remindBeforeMinutes)) ?? 0
+        repeatRule = RepeatRule(rawValue: (try? c.decode(String.self, forKey: .repeatRule)) ?? "") ?? .none
         include = (try? c.decode(Bool.self, forKey: .include)) ?? true
+        savedItemID = try? c.decodeIfPresent(String.self, forKey: .savedItemID)
+        existingItemID = try? c.decodeIfPresent(String.self, forKey: .existingItemID)
+        saveError = try? c.decodeIfPresent(String.self, forKey: .saveError)
     }
 }
 
@@ -128,7 +151,9 @@ enum AIStructurer {
       "due_in_minutes": 如果用户说的是相对当前时刻的时间（“10分钟后”“半小时后”“两小时后”），这里填相对分钟数；否则填 -1,
       "duration_minutes": 事件的时长分钟数，不是事件就填 0,
       "priority": "high 或 normal 或 low",
-      "remind_before_minutes": 用户明确说了提前多久提醒就填分钟数（“提前半小时提醒我”填 30），没提就填 0
+      "remind_before_minutes": 用户明确说了提前多久提醒就填分钟数（“提前半小时提醒我”填 30），没提就填 0,
+      "repeat": "none 或 daily 或 weekdays 或 weekly 或 monthly",
+      "existing_item_id": 这一条如果是在改【这一段对话】里已经列出的某条，就把那条后面的 item_id 原样抄过来；是全新的事就填空字符串
     }
 
     规则：
@@ -147,7 +172,13 @@ enum AIStructurer {
     7. 如果整段内容里没有任何可执行的事，返回 "items": []。
     8. 如果带了图片，先把图里的内容读出来（可能是白板照片、纸质笔记、聊天截图、名片、手写便签），把其中提到的待办、时间、人名一并抽取。用户只发一张图、没配文字时，图里的内容就是全部输入，不要因为用户没打字就返回空数组：图里哪怕只有一句“明天交周报”，也要抽成一条待办。图里的字看不清就不要猜，宁可不抽。
     9. 如果用户是在改上一条结果（比如“第二条改成周五下午”“不要第一条了”），要结合【这一段对话】里已经列出的条目，把改完之后的完整清单重新输出一遍，不要只输出改动的那一条，也不要漏掉没被改动的条目。
+       **条目已经建好了**（不用等用户确认），所以「重列一遍」必须带上 existing_item_id：改动的那几条抄下它们在【这一段对话】里的 item_id，新出现的事留空字符串。带上 id 才是「改那一条」，不带给会变成又建一条新的，列表里就会出现两条。
     10. 用户可能会**引用**某一条消息再说话（输入里会带一段【被引用的那条】）。那说明他在对着那句话回话：句里的指代（“这条”“你说的”“上面那个”）以被引用的那条为准，不要理解成别的消息。
+    11. repeat 只在用户说了「重复」的意思时才填，一定要照原话说，别自作主张：
+       - “每天”“每晚”“每天早上” → daily；“每个工作日”“周一到周五” → weekdays；“每周三”“每个星期一” → weekly；“每月1号”“每月15日” → monthly。
+       - 只说过一次的事（“明天下午三点开会”“10 分钟后提醒我”）→ none。
+       - 填了 daily/weekdays/weekly/monthly 的条目**必须**有时间：due_date 写**下一次**的具体时刻。例如现在是 10 月 11 日 20:00，用户说“每天早上八点提醒我喝水” → due_date 是 2026-10-12 08:00、repeat 是 daily；“每周三下午两点开例会”（今天正好是周三且已过两点）→ 写下一个周三的 14:00。
+       - 重复的条目通常判成 notification（响一下就完，不用打勾），不要判成 note——note 不提醒。
 
     【remember】把以后还用得上的信息记下来。这是以后回答「我这一天做了什么」「明天要做什么」的唯一依据，所以用户说的事都要落进来。kind 只有这几种：
        - done：用户刚做完 / 今天做了什么（“上午去看了桥杆”“跟老王通了电话”）
@@ -287,6 +318,13 @@ enum AIStructurer {
             }
 
             let remindBefore = (dict["remind_before_minutes"] as? Int) ?? (dict["remind_before_minutes"] as? NSNumber)?.intValue ?? 0
+            // 模型写的重复规则五花八门（"daily"、"每天"、"每天提醒"），只认能对上枚举的；
+            // 认不出的当「不重复」——排成一次性提醒，比自作主张天天响要好。
+            let repeatRaw = ((dict["repeat"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let repeatRule = Self.repeatRule(fromText: repeatRaw)
+            // 模型说「这条是在改已有的哪一条」时抄回来的 id（可能是空的、也可能是它编的，
+            // 所以调用方还要拿它去库里对一遍，对不上就当新条目）
+            let existingID = ((dict["existing_item_id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
             return ParsedItem(
                 kind: kind,
@@ -295,13 +333,28 @@ enum AIStructurer {
                 dueDate: dueDate,
                 durationMinutes: duration,
                 priority: ((dict["priority"] as? String) ?? "normal").lowercased(),
-                remindBeforeMinutes: max(0, remindBefore)
+                remindBeforeMinutes: max(0, remindBefore),
+                repeatRule: repeatRule,
+                existingItemID: existingID.isEmpty ? nil : existingID
             )
         }
         for item in items {
-            AppLog.info("AI", "条目 \(item.kind.rawValue)「\(item.title)」时间=\(item.dueDate.isEmpty ? "无" : item.dueDate) 提前提醒=\(item.remindBeforeMinutes)分")
+            let repeatText = item.repeatRule == .none ? "无" : item.repeatRule.label
+            AppLog.info("AI", "条目 \(item.kind.rawValue)「\(item.title)」时间=\(item.dueDate.isEmpty ? "无" : item.dueDate) 提前提醒=\(item.remindBeforeMinutes)分 重复=\(repeatText) 改自=\(item.existingItemID ?? "新条目")")
         }
         return items
+    }
+
+    /// 模型给的重复字段 → 枚举。允许多写一点（"daily"、"每天"、"每个工作日"、"每周"），
+    /// 认不出就按不重复处理。
+    static func repeatRule(fromText text: String) -> RepeatRule {
+        let t = text.lowercased()
+        guard !t.isEmpty, t != "none", t != "no", t != "false" else { return .none }
+        if t.contains("weekday") || t.contains("工作日") { return .weekdays }
+        if t.contains("daily") || t.contains("每天") || t.contains("每日") { return .daily }
+        if t.contains("weekly") || t.contains("每周") || t.contains("每星期") { return .weekly }
+        if t.contains("monthly") || t.contains("每月") { return .monthly }
+        return RepeatRule(rawValue: t) ?? .none
     }
 
     private static func decodeMemories(_ value: Any?) -> [MemoryDraft] {

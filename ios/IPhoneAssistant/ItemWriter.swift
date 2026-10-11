@@ -85,6 +85,17 @@ enum ItemWriter {
     /// 存一条并（如果有时间）排上通知
     @discardableResult
     static func save(_ parsed: ParsedItem, source: String) throws -> AssistantItem {
+        let item = try makeItem(from: parsed, existing: nil, source: source)
+        return ItemStore.shared.add(item)
+    }
+
+    /// `ParsedItem`（对话里那张卡片上的东西）→ 库里的一行。
+    ///
+    /// `existing` 给「改一条已经存下的」用：打勾状态、手动顺序、创建时间和来源都得留着，
+    /// 只把用户改过的那几个字段换掉。传 nil 就是新建。
+    static func makeItem(from parsed: ParsedItem,
+                         existing: AssistantItem?,
+                         source: String) throws -> AssistantItem {
         let title = parsed.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw WriteError.emptyTitle }
 
@@ -96,20 +107,26 @@ enum ItemWriter {
             }
             due = date
         }
-        // 日程和提醒没时间就失去了意义（不会响、也不知道占哪一段），这两种必须给时间
-        if due == nil && (parsed.kind == .event || parsed.kind == .notification) {
+        // 日程、提醒、以及任何要重复的条目，没时间就失去了意义：
+        // 不会响、也不知道占哪一段
+        let needsTime = parsed.kind == .event || parsed.kind == .notification || parsed.repeatRule != .none
+        if due == nil && needsTime {
             throw WriteError.needTime(title)
         }
 
-        let item = AssistantItem(kind: parsed.kind,
-                                 title: title,
-                                 notes: parsed.notes,
-                                 dueAt: due,
-                                 durationMinutes: parsed.durationMinutes,
-                                 priority: parsed.priority,
-                                 remindBeforeMinutes: parsed.remindBeforeMinutes,
-                                 source: source)
-        return ItemStore.shared.add(item)
+        var item = existing ?? AssistantItem()
+        item.kind = parsed.kind
+        item.title = title
+        item.notes = parsed.notes
+        item.dueAt = due
+        item.durationMinutes = parsed.durationMinutes
+        item.priority = parsed.priority
+        item.remindBeforeMinutes = parsed.remindBeforeMinutes
+        item.repeatRule = parsed.kind == .note ? .none : parsed.repeatRule
+        // 重复的条目是常设提醒，没有「完成一次」这回事（通知上也不给「完成」按钮）
+        if item.repeatRule != .none { item.isDone = false }
+        if item.source.isEmpty { item.source = source }
+        return item
     }
 
     /// 逐条存，一条失败不拖垮整批
@@ -127,15 +144,20 @@ enum ItemWriter {
         return (ok, bad)
     }
 
-    /// 存完之后给用户的那句话：说清存到哪儿了、到点会怎样
+    /// 存完之后给用户的那句话：说清存到哪儿了、到点会怎样、会不会重复
     static func summary(for items: [ParsedItem]) -> String {
         guard !items.isEmpty else { return "" }
         let kinds = Set(items.map { $0.kind })
         let notifying = items.filter { $0.kind != .note && !$0.dueDate.isEmpty }.count
+        let repeating = items.filter { $0.repeatRule != .none }
         var text = kinds.count == 1
             ? "已存下 \(items.count) 条\(kinds.first?.label ?? "")"
             : "已存下 \(items.count) 条"
         if notifying > 0 { text += "，到点会弹通知" }
+        if !repeating.isEmpty {
+            let rules = Set(repeating.map { $0.repeatRule.label }).sorted().joined(separator: "、")
+            text += "（\(repeating.count) 条会\(rules)一直提醒）"
+        }
         text += "。在「今日 → 安排」里能改时间和备注。"
         return text
     }

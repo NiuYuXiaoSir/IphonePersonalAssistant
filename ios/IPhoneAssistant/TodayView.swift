@@ -16,6 +16,12 @@ struct TodayView: View {
 
     @State private var path = NavigationPath()
     @State private var showRecorder = false
+    @State private var toast = ""
+    /// 刚打勾的那条计划 + 它对应的流水（5 秒撤销窗口里用）
+    @State private var undoDoneTarget: (plan: MemoryLog, done: MemoryLog)?
+    /// 触觉：打勾成功一下、撤下一条提醒一下（设置里关掉触觉就不响）
+    @State private var hapticSuccess = 0
+    @State private var hapticWarning = 0
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -50,6 +56,13 @@ struct TodayView: View {
                 }
             }
             .fullScreenCover(isPresented: $showRecorder) { RecordView() }
+            .sensoryFeedback(.success, trigger: hapticSuccess) { _, _ in settings.hapticsEnabled }
+            .sensoryFeedback(.warning, trigger: hapticWarning) { _, _ in settings.hapticsEnabled }
+            .toast($toast,
+                   actionTitle: "撤销",
+                   duration: 5,
+                   onExpire: { undoDoneTarget = nil },
+                   action: { undoComplete() })
             .onAppear {
                 memory.reload()
                 balance.refreshIfStale(settings: settings)
@@ -175,13 +188,23 @@ struct TodayView: View {
     @ViewBuilder
     private var planSection: some View {
         if !plans.isEmpty {
-            Section("今天要做") {
+            Section {
                 ForEach(plans) { log in
                     HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: "circle")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 3)
+                        // 打勾：这条计划变成「做完了」，挪到下面「今天的流水」里。
+                        // 有 5 秒撤销——「People expect undo to let them reverse their recent actions」。
+                        Button {
+                            complete(log)
+                        } label: {
+                            Image(systemName: "circle")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, height: 44, alignment: .top)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("把「\(log.content)」标成做完")
+
                         VStack(alignment: .leading, spacing: 3) {
                             Text(log.content)
                                 .font(.body)
@@ -192,11 +215,32 @@ struct TodayView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .padding(.vertical, 12)
                     }
-                    .padding(.vertical, 2)
                 }
+            } header: {
+                Text("今天要做")
+            } footer: {
+                Text("点左边的圈就是做完了——这一条会挪到「今天的流水」，也记进记忆里。点错了有 5 秒可以撤销。")
             }
         }
+    }
+
+    /// 打勾：计划 → 做完，并留一个 5 秒的撤销
+    private func complete(_ log: MemoryLog) {
+        let done = memory.markPlanDone(log)
+        guard let done else { return }
+        undoDoneTarget = (plan: log, done: done)
+        hapticSuccess += 1
+        toast = "已完成：\(log.content)"
+    }
+
+    private func undoComplete() {
+        guard let target = undoDoneTarget else { return }
+        undoDoneTarget = nil
+        memory.undoPlanDone(done: target.done, restoring: target.plan)
+        hapticWarning += 1
+        // 不再弹一条提示：那一行会自己回到「今天要做」，看得见
     }
 
     // MARK: - 今天的流水
@@ -275,14 +319,9 @@ struct TodayView: View {
         if !items.items.isEmpty {
             Section {
                 ForEach(todayNotices.prefix(5)) { item in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.title)
-                            .font(.body)
-                        Text(noticeLine(item))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                    HStack(alignment: .top, spacing: 10) {
+                        noticeRow(item)
                     }
-                    .padding(.vertical, 2)
                 }
                 NavigationLink {
                     ScheduleView()
@@ -295,13 +334,55 @@ struct TodayView: View {
             } footer: {
                 if todayNotices.isEmpty {
                     Text("今天没有要到点的提醒。所有安排——能改时间、改备注、拖动排序——都在「安排」里。")
+                } else {
+                    Text("能打勾的直接在这里打勾——办完了就不再占着通知。带「每天」的条目是重复提醒，不用打勾，它会一直响。")
                 }
             }
         }
     }
 
+    /// 一条待弹的通知：左边那个圈直接把它标成完成（等同通知上的「完成」按钮）
+    @ViewBuilder
+    private func noticeRow(_ item: AssistantItem) -> some View {
+        if item.kind == .note || item.isRepeating {
+            // 备忘不提醒、重复的条目没有「完成一次」这回事，都不给圈
+            Image(systemName: item.isRepeating ? "repeat" : item.kind.symbol)
+                .font(.footnote)
+                .foregroundStyle(item.isRepeating ? Color.accentColor : Color.secondary)
+                .frame(width: 20)
+                .padding(.top, 3)
+        } else {
+            Button {
+                items.setDone(id: item.id, done: true)
+                hapticSuccess += 1
+            } label: {
+                Image(systemName: "circle")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44, alignment: .top)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("把「\(item.title)」标成完成")
+        }
+
+        VStack(alignment: .leading, spacing: 3) {
+            Text(item.title)
+                .font(.body)
+            Text(noticeLine(item))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, item.kind == .note || item.isRepeating ? 2 : 11)
+    }
+
+    /// 时间那行。重复的条目写「每天 08:00」而不是「明天 08:00」——
+    /// 一眼要看出来这条是天天都要响的。
     private func noticeLine(_ item: AssistantItem) -> String {
         guard let fire = item.fireDate else { return item.kind.label }
+        if let repeatText = item.repeatText {
+            return "\(repeatText) · \(ItemTimeText.relative(fire))"
+        }
         let when = ItemTimeText.when(fire)
         guard fire > Date() else { return "\(when) · 时间已过" }
         return "\(when) · \(ItemTimeText.relative(fire))"

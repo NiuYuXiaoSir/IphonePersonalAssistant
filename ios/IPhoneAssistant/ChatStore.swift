@@ -571,9 +571,12 @@ final class ChatStore: ObservableObject {
                 body = "（引用\(quote.author)说的「\(String(quote.displayText.prefix(120)))」）" + body
             }
             if let items = entry.items, !items.isEmpty {
+                // item_id 一起带上：用户改上一轮的结果时，模型要把整份清单重列一遍，
+                // 带着 id 回来才知道是「改那条」——不带就变成又建一条（列表里会出现两条）
                 let list = items.map { item -> String in
                     var s = "\(item.kind.label)「\(item.title)」"
                     if !item.dueDate.isEmpty { s += "，时间 \(item.dueDate)" }
+                    if let savedID = item.savedItemID { s += "，item_id=\(savedID)" }
                     return s
                 }.joined(separator: "；")
                 body += "（已列出条目：\(list)）"

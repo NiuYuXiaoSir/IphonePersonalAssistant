@@ -53,6 +53,8 @@ struct ChatView: View {
     @State private var voicePrefix = ""
     /// 正在跑的请求。用来支持「停止」。
     @State private var sendTask: Task<Void, Never>?
+    /// 条目卡片上的编辑 → 库里那一行的同步（合并 0.6 秒再跑）
+    @State private var syncTask: Task<Void, Never>?
     /// 触觉触发器：写入成功一次、删除一次
     @State private var hapticSuccess = 0
     @State private var hapticWarning = 0
@@ -449,8 +451,8 @@ struct ChatView: View {
             }
 
             if let items = entry.items, !items.isEmpty {
-                ItemsCard(items: itemsBinding(entry.id), busy: entry.busy) {
-                    write(entry.id)
+                ItemsCard(items: itemsBinding(entry.id)) { itemID in
+                    toggleInclude(itemID: itemID, entryID: entry.id)
                 }
             }
 
@@ -534,11 +536,12 @@ struct ChatView: View {
     }
 
     private func resultCard(_ entry: ChatEntry, result: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let failed = entry.items?.contains { $0.include && $0.saveError != nil } ?? false
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: failed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                     .font(.footnote)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(failed ? Color.orange : Color.green)
                     .padding(.top, 2)
                 Text(result)
                     .font(.subheadline)
@@ -823,7 +826,20 @@ struct ChatView: View {
     private func itemsBinding(_ id: String) -> Binding<[ParsedItem]> {
         Binding(
             get: { entry(id)?.items ?? [] },
-            set: { newValue in updateEntry(id) { $0.items = newValue } }
+            set: { newValue in
+                let previous = entry(id)?.items ?? []
+                updateEntry(id) { $0.items = newValue }
+                // 卡片上的改动直接落到「安排」里那一行——卡片不是草稿，是监督面板。
+                // 打字是连续动作：合并 0.6 秒再同步，免得每敲一个字就重排一遍通知。
+                // 也不能就地同步：这句是在视图更新里跑的，直接改 store 会撞
+                // 「Modifying state during view update」。
+                syncTask?.cancel()
+                syncTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    guard !Task.isCancelled else { return }
+                    applyEdits(from: previous, entryID: id)
+                }
+            }
         )
     }
 
@@ -1060,62 +1076,157 @@ struct ChatView: View {
                 如果是想让我记下一件事，可以说得更具体一点，比如「明天下午三点跟老王过方案」。
                 """
             } else {
-                entry.text = "整理出 \(result.items.count) 条，核对一下，没问题就写进系统。"
+                // 条目这一轮就建好了，下面那张卡片是核对的入口，不用再点一次「存下」
+                entry.text = ItemWriter.summary(for: result.items) + "在下面核对一下：改哪一项都会同步过去，点左边的圈可以撤下。"
             }
         }
         if remembered.facts + remembered.logs > 0 {
             AppLog.info("Chat", "记忆已更新：长期 \(remembered.facts) 条、流水 \(remembered.logs) 条")
         }
+        // 条目不等用户确认，模型一回来就落库——用户只监督，不再点「存下」
+        autosave(id)
         // 模型刚回来的东西立刻落盘，别等那 0.8 秒的合并窗口
         chats.saveNow()
         // 这一趟已经花掉 token 了，余额重新查一次，胶囊上的数字才是真的
         balance.refresh(settings: settings)
     }
 
-    private func write(_ id: String) {
-        guard let entry = entry(id), let items = entry.items else { return }
-        let selected = items.filter { $0.include }
-        guard !selected.isEmpty else {
-            updateEntry(id) { $0.result = "没有勾选任何条目。" }
+    // MARK: - 条目的自动落库与监督
+
+    /// 模型刚整理出的条目立刻写进「安排」，一条失败不拖垮其余。
+    private func autosave(_ id: String) {
+        guard let items = entry(id)?.items, !items.isEmpty else { return }
+        for item in items where item.include && item.savedItemID == nil {
+            save(itemID: item.id, entryID: id, announce: false)
+        }
+        if entry(id)?.items?.contains(where: { $0.savedItemID != nil }) == true {
+            hapticSuccess += 1
+        }
+        refreshStatus(id)
+        chats.saveNow()
+    }
+
+    /// 存一条到「安排」。失败就在那张卡片上写明原因（缺时间、时间认不出），
+    /// 用户改完时间会自动再试一次——不再有「点了按钮才知道存不下」。
+    ///
+    /// 模型带回来的 `existing_item_id` 能对上库里哪一行时，走的是**改**那一行：
+    /// 用户说「第二条改成周五」，模型会把整份清单重列一遍，那几条是改不是新建。
+    private func save(itemID: String, entryID id: String, announce: Bool = true) {
+        guard var item = entry(id)?.items?.first(where: { $0.id == itemID }) else { return }
+        guard item.include else { return }
+
+        // 认一认模型抄回来的 id：对得上就当成「改那条」
+        if item.savedItemID == nil, let echoed = item.existingItemID,
+           ItemStore.shared.item(id: echoed) != nil {
+            item.savedItemID = echoed
+            AppLog.info("Chat", "条目「\(item.title)」认作改「安排」里已有的那条 \(echoed)")
+        }
+        item.existingItemID = nil
+
+        do {
+            if let savedID = item.savedItemID, let existing = ItemStore.shared.item(id: savedID) {
+                let updated = try ItemWriter.makeItem(from: item, existing: existing, source: threadID)
+                ItemStore.shared.update(updated)
+            } else {
+                let saved = try ItemWriter.save(item, source: threadID)
+                item.savedItemID = saved.id
+            }
+            item.saveError = nil
+            updateItem(item, entryID: id)
+            if announce { hapticSuccess += 1 }
+        } catch {
+            item.saveError = error.localizedDescription
+            updateItem(item, entryID: id)
+            AppLog.warn("Chat", "条目「\(item.title)」没存下：\(error.localizedDescription)")
+        }
+        refreshStatus(id)
+    }
+
+    /// 卡片上的圈：勾上就建，撤下就从「安排」里删掉（还能再勾回来）
+    private func toggleInclude(itemID: String, entryID id: String) {
+        guard var item = entry(id)?.items?.first(where: { $0.id == itemID }) else { return }
+        item.include.toggle()
+        if item.include {
+            updateItem(item, entryID: id)
+            save(itemID: itemID, entryID: id)
+            toast = "已加进「安排」"
             return
         }
+        if let savedID = item.savedItemID, let existing = ItemStore.shared.item(id: savedID) {
+            ItemStore.shared.delete(existing)
+        }
+        item.savedItemID = nil
+        item.saveError = nil
+        updateItem(item, entryID: id)
+        toast = "已从「安排」里撤下「\(item.title)」，再点一下能加回来"
+        hapticWarning += 1
+        refreshStatus(id)
+    }
 
-        let counts = Dictionary(grouping: selected, by: { $0.kind })
-            .map { "\($0.key.label) \($0.value.count)" }
-            .sorted()
-            .joined(separator: "、")
-        AppLog.info("Chat", "开始存下：\(counts)")
+    /// 卡片上改过的字段（标题、时间、类型、重复、时长）同步到库里那一行。
+    /// 之前没存下的（比如时间认不出）改完再试一次。
+    private func applyEdits(from previous: [ParsedItem], entryID id: String) {
+        guard let items = entry(id)?.items else { return }
+        for item in items {
+            guard let old = previous.first(where: { $0.id == item.id }) else { continue }
+            guard item.title != old.title
+                    || item.notes != old.notes
+                    || item.dueDate != old.dueDate
+                    || item.durationMinutes != old.durationMinutes
+                    || item.kind != old.kind
+                    || item.repeatRule != old.repeatRule
+                    || item.remindBeforeMinutes != old.remindBeforeMinutes else { continue }
+            guard item.include else { continue }
 
-        updateEntry(id) { $0.busy = true }
-
-        // 存的是本机数据库里的一行，不再是别的 App——写库是同步的、毫秒级，
-        // 所以不需要再起一个 Task 等系统接口（也就没有「权限被拒」这类失败）
-        let result = ItemWriter.saveAll(selected, source: threadID)
-        AppLog.info("Chat", "存下结束：成功 \(result.succeeded.count)，失败 \(result.failed.count)")
-
-        updateEntry(id) { entry in
-            entry.busy = false
-            entry.items = nil
-            entry.writtenKinds = selected.map { $0.kind.rawValue }
-            var lines: [String] = []
-            if !result.succeeded.isEmpty {
-                lines.append("已存下：")
-                lines.append(contentsOf: result.succeeded.map { "· " + $0 })
-            }
-            if !result.failed.isEmpty {
-                lines.append("这 \(result.failed.count) 条没存下：")
-                lines.append(contentsOf: result.failed.map { "· " + $0 })
-            }
-            entry.result = lines.joined(separator: "\n")
-
-            if result.failed.isEmpty {
-                hapticSuccess += 1
-                entry.text = ItemWriter.summary(for: selected)
-            } else {
-                entry.text = "存下 \(result.succeeded.count) 条，\(result.failed.count) 条没成。"
+            if let savedID = item.savedItemID {
+                // 那一行可能已经在「安排」里被删了（用户的动作优先），删了就什么都不做
+                guard let existing = ItemStore.shared.item(id: savedID) else { continue }
+                do {
+                    let updated = try ItemWriter.makeItem(from: item, existing: existing, source: threadID)
+                    ItemStore.shared.update(updated)
+                    if item.saveError != nil { saveError(nil, itemID: item.id, entryID: id) }
+                } catch {
+                    saveError(error.localizedDescription, itemID: item.id, entryID: id)
+                }
+            } else if item.saveError != nil {
+                save(itemID: item.id, entryID: id)
             }
         }
-        chats.saveNow()
+        refreshStatus(id)
+    }
+
+    /// 卡片顶上的那句话：存下几条、哪几条没成
+    private func refreshStatus(_ id: String) {
+        guard let items = entry(id)?.items, !items.isEmpty else { return }
+        let saved = items.filter { $0.savedItemID != nil }
+        let failed = items.filter { $0.include && $0.saveError != nil }
+        var lines: [String] = []
+        if !saved.isEmpty {
+            let names = saved.map { "\($0.kind.label)「\($0.title)」" }.joined(separator: "、")
+            lines.append("已存下 \(saved.count) 条：\(names)")
+        }
+        if !failed.isEmpty {
+            let reasons = failed.map { "「\($0.title)」\($0.saveError ?? "")" }.joined(separator: "；")
+            lines.append("这 \(failed.count) 条没存下：\(reasons)")
+        }
+        updateEntry(id) { entry in
+            entry.writtenKinds = saved.map { $0.kind.rawValue }
+            entry.result = lines.isEmpty ? nil : lines.joined(separator: "\n")
+        }
+    }
+
+    private func updateItem(_ item: ParsedItem, entryID id: String) {
+        updateEntry(id) { entry in
+            guard var items = entry.items, let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+            items[index] = item
+            entry.items = items
+        }
+    }
+
+    private func saveError(_ message: String?, itemID: String, entryID id: String) {
+        guard var item = entry(id)?.items?.first(where: { $0.id == itemID }) else { return }
+        item.saveError = message
+        updateItem(item, entryID: id)
     }
 
     // MARK: - 日期分隔
@@ -1130,13 +1241,15 @@ struct ChatView: View {
 
 // MARK: - 条目卡片
 
-/// 助手消息里的那张卡片：勾选 / 改标题 / 改时间 / 写进系统。
+/// 助手消息里的那张卡片。**它不再是「草稿 + 存下按钮」**，而是已经建好的那几条的监督面板：
+/// 模型一回来条目就写进「安排」了，这里改什么（标题、时间、类型、重复）就同步改库里那一行，
+/// 点左边的圈就是撤下（从「安排」里删掉）或加回来。
 /// 它直接绑定到 ChatStore 里的那条消息，所以改完切页面再回来还在。
 private struct ItemsCard: View {
 
     @Binding var items: [ParsedItem]
-    let busy: Bool
-    let onWrite: () -> Void
+    /// 点某一条左边的圈：存下 / 撤下
+    let onToggle: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1151,23 +1264,22 @@ private struct ItemsCard: View {
         }
         .background(Color(uiColor: .secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .disabled(busy)
     }
 
     private func itemRow(_ item: Binding<ParsedItem>) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Button {
-                item.wrappedValue.include.toggle()
+                onToggle(item.wrappedValue.id)
             } label: {
-                Image(systemName: item.wrappedValue.include ? "checkmark.circle.fill" : "circle")
+                Image(systemName: circleIcon(item.wrappedValue))
                     .font(.title3)
-                    .foregroundStyle(item.wrappedValue.include ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(circleTint(item.wrappedValue))
                     // 圈本身只有 20 pt 上下，热区按 HIG 补到 44×44
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(item.wrappedValue.include ? "不存这条" : "存这条")
+            .accessibilityLabel(item.wrappedValue.include ? "从安排里撤下这条" : "把这条加进安排")
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
@@ -1206,13 +1318,36 @@ private struct ItemsCard: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                 }
+
+                // 没存下的原因写在原地：用户在这儿改一下时间就会自动再存一次
+                if let reason = item.wrappedValue.saveError {
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                        Text(reason)
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(.orange)
+                }
             }
+            .opacity(item.wrappedValue.include ? 1 : 0.55)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
     }
 
-    /// 这一条会怎么提醒你——顺手也能改类型。
+    private func circleIcon(_ item: ParsedItem) -> String {
+        if item.include && item.saveError != nil { return "exclamationmark.circle.fill" }
+        return item.include ? "checkmark.circle.fill" : "circle"
+    }
+
+    private func circleTint(_ item: ParsedItem) -> Color {
+        if item.include && item.saveError != nil { return .orange }
+        return item.include ? Color.accentColor : Color.secondary
+    }
+
+    /// 这一条会怎么提醒你——顺手也能改类型，以及**多久重复一次**（每天 / 工作日 / 每周 / 每月）。
     ///
     /// 模型把照片里的东西判成「备忘」是常见的事，而备忘不提醒。
     /// 与其让用户回到对话里重新说一遍，不如在这里点一下就改过去。
@@ -1221,13 +1356,26 @@ private struct ItemsCard: View {
             ForEach(ParsedItem.Kind.allCases, id: \.self) { candidate in
                 Button {
                     item.wrappedValue.kind = candidate
+                    if candidate == .note { item.wrappedValue.repeatRule = .none }
                 } label: {
                     Label("\(candidate.label)（\(candidate.behavior)）", systemImage: candidate.symbol)
                 }
             }
+            if item.wrappedValue.kind != .note {
+                Section("重复") {
+                    ForEach(RepeatRule.allCases, id: \.self) { rule in
+                        Button {
+                            item.wrappedValue.repeatRule = rule
+                        } label: {
+                            Label(rule.pickerLabel,
+                                  systemImage: item.wrappedValue.repeatRule == rule ? "checkmark" : "repeat")
+                        }
+                    }
+                }
+            }
         } label: {
             HStack(spacing: 3) {
-                Text(item.wrappedValue.kind.behavior)
+                Text(capsuleText(item.wrappedValue))
                     .font(.caption2)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2)
@@ -1237,36 +1385,37 @@ private struct ItemsCard: View {
             .background(Color.accentColor.opacity(0.15), in: Capsule())
             .foregroundStyle(Color.accentColor)
         }
-        .accessibilityLabel("这条怎么提醒：\(item.wrappedValue.kind.behavior)，点按改类型")
+        .accessibilityLabel("这条怎么提醒：\(capsuleText(item.wrappedValue))，点按改类型或重复")
+    }
+
+    private func capsuleText(_ item: ParsedItem) -> String {
+        guard item.kind != .note, item.repeatRule != .none else { return item.kind.behavior }
+        return "\(item.kind.behavior) · \(item.repeatRule.label)"
     }
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Button(allSelected ? "全不选" : "全选") {
+            Button(allSelected ? "全部撤下" : "全部加回") {
                 let target = !allSelected
-                for index in items.indices { items[index].include = target }
+                if target {
+                    for index in items.indices where !items[index].include {
+                        onToggle(items[index].id)
+                    }
+                } else {
+                    for index in items.indices where items[index].include {
+                        onToggle(items[index].id)
+                    }
+                }
             }
             .font(.footnote)
             .buttonStyle(.plain)
             .foregroundStyle(Color.accentColor)
 
-            Text("\(items.filter { $0.include }.count)/\(items.count) 条")
+            Text(countText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Spacer()
-
-            Button(action: onWrite) {
-                HStack(spacing: 6) {
-                    if busy {
-                        ProgressView().controlSize(.mini)
-                    }
-                    Text(writeTitle)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(busy || items.allSatisfy { !$0.include })
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -1276,12 +1425,10 @@ private struct ItemsCard: View {
         !items.isEmpty && items.allSatisfy { $0.include }
     }
 
-    /// 按钮上直接说清这批东西存几条、会不会响
-    private var writeTitle: String {
-        if busy { return "存下中…" }
-        let selected = items.filter { $0.include }
-        guard !selected.isEmpty else { return "存下来" }
-        return "存下（\(selected.count) 条）"
+    private var countText: String {
+        let saved = items.filter { $0.savedItemID != nil }.count
+        if saved == items.count { return "\(saved) 条都在「安排」里" }
+        return "\(saved)/\(items.count) 条在「安排」里"
     }
 }
 

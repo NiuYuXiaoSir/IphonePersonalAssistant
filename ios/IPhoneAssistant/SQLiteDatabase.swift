@@ -204,6 +204,7 @@ enum AppDatabase {
           duration_minutes INTEGER NOT NULL DEFAULT 0,
           priority TEXT NOT NULL DEFAULT 'normal',
           remind_before INTEGER NOT NULL DEFAULT 0,
+          repeat_rule TEXT NOT NULL DEFAULT '',
           is_done INTEGER NOT NULL DEFAULT 0,
           sort_index REAL NOT NULL DEFAULT 0,
           source TEXT NOT NULL DEFAULT '',
@@ -242,5 +243,22 @@ enum AppDatabase {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_unique ON timeline(day, kind, content);
         CREATE INDEX IF NOT EXISTS idx_timeline_day ON timeline(day);
         """)
+        migrate(db)
+    }
+
+    /// 给已经在手机上的库补列。`CREATE TABLE IF NOT EXISTS` 只对**新装的**库有效，
+    /// 老库里加字段必须自己 ALTER，否则老用户升级上来一读就少一列。
+    private static func migrate(_ db: SQLiteDatabase) {
+        addColumnIfMissing(db, table: "items", column: "repeat_rule",
+                           definition: "TEXT NOT NULL DEFAULT ''")
+    }
+
+    private static func addColumnIfMissing(_ db: SQLiteDatabase, table: String, column: String,
+                                           definition: String) {
+        let existing = db.query("PRAGMA table_info(\(table))").compactMap { $0["name"] as? String }
+        guard !existing.isEmpty, !existing.contains(column) else { return }
+        if db.exec("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)") {
+            AppLog.info("DB", "补列 \(table).\(column)")
+        }
     }
 }

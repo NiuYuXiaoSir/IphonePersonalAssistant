@@ -194,6 +194,46 @@ final class MemoryStore: ObservableObject {
         reload()
     }
 
+    /// 把一条「打算做」标成「做完了」：这一条从计划挪进流水，当天也算数。
+    /// 今日页上那个圈走的就是这里——「今天要做」里的事做完了得能打勾，
+    /// 不然那条计划会一直挂在那儿（模型下次回答「今天做了什么」也就看不到它了）。
+    /// 返回新落地的那条流水记录，撤销时拿它删。
+    @discardableResult
+    func markPlanDone(_ log: MemoryLog) -> MemoryLog? {
+        guard log.kind == .plan else { return nil }
+        let done = MemoryLog(id: UUID().uuidString,
+                             day: log.day,
+                             at: Date(),
+                             kind: .done,
+                             content: log.content)
+        let stamp = Date().timeIntervalSince1970
+        db.transaction {
+            db.run("DELETE FROM timeline WHERE id = ?", [log.id])
+            db.run("""
+                INSERT OR IGNORE INTO timeline(id, day, at, kind, content, thread_id, created_at)
+                VALUES(?,?,?,?,?,?,?)
+                """, [done.id, done.day, stamp, done.kind.rawValue, done.content, "", stamp])
+        }
+        reload()
+        AppLog.info("Memory", "把计划标成做完：「\(log.content)」")
+        return done
+    }
+
+    /// 撤销「标成做完」：删掉刚落地的那条流水，计划原样放回去（连原来的时间一起）
+    func undoPlanDone(done: MemoryLog, restoring plan: MemoryLog) {
+        let stamp = Date().timeIntervalSince1970
+        db.transaction {
+            db.run("DELETE FROM timeline WHERE id = ?", [done.id])
+            db.run("""
+                INSERT OR IGNORE INTO timeline(id, day, at, kind, content, thread_id, created_at)
+                VALUES(?,?,?,?,?,?,?)
+                """, [plan.id, plan.day, plan.at.timeIntervalSince1970, MemoryKind.plan.rawValue,
+                      plan.content, "", stamp])
+        }
+        reload()
+        AppLog.info("Memory", "撤销打勾：「\(plan.content)」回到计划")
+    }
+
     enum Scope {
         case facts
         case timeline

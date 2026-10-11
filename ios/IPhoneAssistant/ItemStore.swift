@@ -1,6 +1,100 @@
 import Foundation
 import UserNotifications
 
+/// 一条安排多久重复一次。
+///
+/// 「每天八点提醒我喝水」「每个工作日提醒我打卡」这类话，以前只能变成**一次**提醒，
+/// 第二天就没了，列表里也看不出来它本该天天响。现在重复规则存在 `items.repeat_rule`，
+/// 通知交给系统的日历触发器（`UNCalendarNotificationTrigger(repeats: true)`）——
+/// 系统自己按日历重复，App 不在前台、甚至几天没打开也照响。
+///
+/// 「每周」「每月」的具体是哪天，不看规则本身，看这条安排自己的时刻（`dueAt`）：
+/// 每周三就是 dueAt 的那个星期几，每月 12 号就是 dueAt 的那一天。
+/// 模型排条目时已经算出「下一次」的绝对时间，拿它当模板正好。
+enum RepeatRule: String, CaseIterable, Codable {
+    case none = ""
+    case daily
+    case weekdays
+    case weekly
+    case monthly
+
+    /// 列表里的短说法
+    var label: String {
+        switch self {
+        case .none:     return "不重复"
+        case .daily:    return "每天"
+        case .weekdays: return "工作日"
+        case .weekly:   return "每周"
+        case .monthly:  return "每月"
+        }
+    }
+
+    /// 编辑表单里的说法（说清「同一天」是什么意思）
+    var pickerLabel: String {
+        switch self {
+        case .none:     return "不重复"
+        case .daily:    return "每天"
+        case .weekdays: return "每个工作日"
+        case .weekly:   return "每周（同一星期几）"
+        case .monthly:  return "每月（同一日）"
+        }
+    }
+
+    /// 一共要排几条系统通知。「工作日」没法用一条日历触发器表达（周一到周五是五个星期几），
+    /// 所以拆成五条，一天一条。
+    var triggerCount: Int { self == .weekdays ? 5 : 1 }
+
+    /// 列表里那一行：「每天 08:00」「每周三 08:00」「每月 12 日 08:00」
+    func text(anchor: Date, calendar: Calendar = .current) -> String {
+        guard self != .none else { return "" }
+        let clockF = DateFormatter()
+        clockF.locale = Locale(identifier: "zh_CN")
+        clockF.dateFormat = "HH:mm"
+        let clock = clockF.string(from: anchor)
+
+        switch self {
+        case .none:     return ""
+        case .daily:    return "每天 \(clock)"
+        case .weekdays: return "工作日 \(clock)"
+        case .weekly:
+            let weekday = DateFormatter()
+            weekday.locale = Locale(identifier: "zh_CN")
+            weekday.dateFormat = "EEE"
+            return "每\(weekday.string(from: anchor)) \(clock)"
+        case .monthly:
+            return "每月 \(calendar.component(.day, from: anchor)) 日 \(clock)"
+        }
+    }
+
+    /// 从 `now` 之后找最近一次该响的时刻，模板是 `anchor` 的时/分（每周、每月还带星期/日号）。
+    /// 只用于显示（「还有几小时」）——真正排通知走系统日历触发器，不经过这里。
+    func nextOccurrence(after now: Date, anchor: Date, calendar: Calendar = .current) -> Date? {
+        func next(weekday: Int? = nil, day: Int? = nil) -> Date? {
+            var match = DateComponents()
+            match.hour = calendar.component(.hour, from: anchor)
+            match.minute = calendar.component(.minute, from: anchor)
+            match.weekday = weekday
+            match.day = day
+            return calendar.nextDate(after: now,
+                                    matching: match,
+                                    matchingPolicy: .nextTime,
+                                    direction: .forward)
+        }
+        switch self {
+        case .none:
+            return anchor
+        case .daily:
+            return next() ?? anchor
+        case .weekdays:
+            return (2...6).compactMap { next(weekday: $0) }.min() ?? anchor
+        case .weekly:
+            return next(weekday: calendar.component(.weekday, from: anchor)) ?? anchor
+        case .monthly:
+            return next(day: calendar.component(.day, from: anchor)) ?? anchor
+        }
+    }
+}
+
 /// App 自己安排的一条事。
 ///
 /// 待办、日程、备忘、提醒这四类现在**都存在本机**（`assistant.sqlite3` 的 `items` 表），
@@ -21,6 +115,8 @@ struct AssistantItem: Identifiable, Equatable {
     var priority: String = "normal"
     /// 提前几分钟提醒：0 = 到点提醒
     var remindBeforeMinutes: Int = 0
+    /// 多久重复一次：不重复 / 每天 / 工作日 / 每周 / 每月
+    var repeatRule: RepeatRule = .none
     var isDone: Bool = false
     /// 手动排序用的位置（越大越靠后）。按时间排时不用它。
     var sortIndex: Double = 0
@@ -29,31 +125,65 @@ struct AssistantItem: Identifiable, Equatable {
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
-    /// 真正弹通知的时刻
-    var fireDate: Date? {
+    /// 真正弹通知的时刻（不算重复的那一次）
+    var baseFireDate: Date? {
         guard let dueAt else { return nil }
         return dueAt.addingTimeInterval(-Double(max(0, remindBeforeMinutes)) * 60)
     }
 
+    /// 下一次会响的时刻。重复的条目会自己往前滚：今天还没到就是今天，今天响过了就是明天/下周/下月。
+    var fireDate: Date? {
+        guard let base = baseFireDate else { return nil }
+        guard isRepeating else { return base }
+        return repeatRule.nextOccurrence(after: Date(), anchor: base)
+    }
+
     var hasTime: Bool { dueAt != nil }
+
+    /// 会重复吗（每天 / 工作日 / 每周 / 每月）
+    var isRepeating: Bool { repeatRule != .none }
+
+    /// 「每天 08:00」这种一眼能看懂的重复说法；不重复是 nil
+    var repeatText: String? {
+        guard isRepeating, let dueAt else { return nil }
+        return repeatRule.text(anchor: dueAt)
+    }
 
     /// 会弹通知吗（备忘不弹）
     var notifies: Bool { kind != .note && fireDate != nil }
 
+    /// 「时间已经过了」只对一次性的条目成立。重复的条目到点响过之后会自动滚到下一次，
+    /// 不是逾期——这也是以前每天提醒看着像「已过时」的毛病。
     var isOverdue: Bool {
+        guard !isRepeating else { return false }
         guard let fireDate else { return false }
         return !isDone && fireDate < Date()
     }
 
     /// 通知里那句话。没写备注就给一句能看懂的话，而不是空白。
+    /// 重复的条目在末尾缀上「（每天 08:00）」——弹出来的那一条本身就该看得出它是天天响的，
+    /// 不用回 App 里核对（HIG 的 Notifications 页：通知要能「understand at a glance」）。
     var notificationBody: String {
         let trimmed = notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        switch kind {
-        case .event:        return "日程开始了"
-        case .todo:         return "到点了，办完记得打勾"
-        default:            return "到点了"
+        let base: String
+        if !trimmed.isEmpty {
+            base = trimmed
+        } else {
+            switch kind {
+            case .event:        base = "日程开始了"
+            case .todo:         base = "到点了，办完记得打勾"
+            default:            base = "到点了"
+            }
         }
+        guard let repeatText = repeatBadgeText else { return base }
+        return "\(base)（\(repeatText)）"
+    }
+
+    /// 通知里那句「（每天 08:00）」。用的是**提醒时刻**（扣掉提前量），
+    /// 和真的会响的那个时间对得上——列表里显示的是到点时刻，两者差一个「提前 N 分钟」。
+    private var repeatBadgeText: String? {
+        guard isRepeating, let base = baseFireDate else { return nil }
+        return repeatRule.text(anchor: base)
     }
 
     /// `yyyy-MM-dd HH:mm`，没有时间就是空串。界面上的时间输入框用它。
@@ -124,7 +254,7 @@ final class ItemStore: ObservableObject {
     func load() {
         items = db.query("""
             SELECT id, kind, title, notes, due_at, duration_minutes, priority,
-                   remind_before, is_done, sort_index, source, created_at, updated_at
+                   remind_before, repeat_rule, is_done, sort_index, source, created_at, updated_at
             FROM items ORDER BY created_at DESC
             """).compactMap { row in
             guard let id = row["id"] as? String else { return nil }
@@ -138,6 +268,7 @@ final class ItemStore: ObservableObject {
             item.durationMinutes = (row["duration_minutes"] as? Int) ?? 0
             item.priority = (row["priority"] as? String) ?? "normal"
             item.remindBeforeMinutes = (row["remind_before"] as? Int) ?? 0
+            item.repeatRule = RepeatRule(rawValue: (row["repeat_rule"] as? String) ?? "") ?? .none
             item.isDone = ((row["is_done"] as? Int) ?? 0) != 0
             item.sortIndex = (row["sort_index"] as? Double) ?? 0
             item.source = (row["source"] as? String) ?? ""
@@ -270,13 +401,13 @@ final class ItemStore: ObservableObject {
     private func write(_ item: AssistantItem) {
         db.run("""
             INSERT OR REPLACE INTO items(id, kind, title, notes, due_at, duration_minutes,
-                                         priority, remind_before, is_done, sort_index,
+                                         priority, remind_before, repeat_rule, is_done, sort_index,
                                          source, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
                [item.id, item.kind.rawValue, item.title, item.notes,
                 item.dueAt?.timeIntervalSince1970, item.durationMinutes,
-                item.priority, item.remindBeforeMinutes, item.isDone ? 1 : 0,
+                item.priority, item.remindBeforeMinutes, item.repeatRule.rawValue, item.isDone ? 1 : 0,
                 item.sortIndex, item.source,
                 item.createdAt.timeIntervalSince1970, item.updatedAt.timeIntervalSince1970])
     }
@@ -285,15 +416,27 @@ final class ItemStore: ObservableObject {
 
     /// 通知计划：按时间从近到远取出最多 `maxScheduled` 条。
     /// 单独拎出来是为了能在主线程算完再交给后台去排（`items` 只能在主线程读）。
+    ///
+    /// 名额按**系统通知条数**算，不按条目数：一条「每个工作日」要排五条（周一~周五各一条），
+    /// 一条「每天」只排一条——重复的靠系统自己循环，不占名额。
     private func notificationPlan() -> [(item: AssistantItem, fire: Date)] {
         let now = Date()
-        var plan: [(item: AssistantItem, fire: Date)] = []
+        var candidates: [(item: AssistantItem, fire: Date)] = []
         for item in openItems {
             guard item.notifies, let fire = item.fireDate, fire > now.addingTimeInterval(1) else { continue }
-            plan.append((item: item, fire: fire))
+            candidates.append((item: item, fire: fire))
         }
-        plan.sort { $0.fire < $1.fire }
-        return Array(plan.prefix(Self.maxScheduled))
+        candidates.sort { $0.fire < $1.fire }
+
+        var plan: [(item: AssistantItem, fire: Date)] = []
+        var used = 0
+        for entry in candidates {
+            let slots = entry.item.repeatRule.triggerCount
+            guard used + slots <= Self.maxScheduled else { continue }
+            used += slots
+            plan.append(entry)
+        }
+        return plan
     }
 
     /// 整批重排通知。打开 App、改过任何一条、启动时都会走一遍。
@@ -309,11 +452,29 @@ final class ItemStore: ObservableObject {
             }
             for entry in plan {
                 // 单条排不上（比如时刻刚好过去）不该打断整批
-                _ = try? await NotificationService.schedule(identifier: Self.notificationPrefix + entry.item.id,
-                                                            title: entry.item.title,
-                                                            body: entry.item.notificationBody,
-                                                            at: entry.fire,
-                                                            category: Self.categoryIdentifier)
+                do {
+                    if entry.item.isRepeating, let base = entry.item.baseFireDate {
+                        // 重复的交给系统日历触发器：按「几点几分（每周/每月还看星期/日号）」循环。
+                        // 挂的是**提醒时刻**（baseFireDate）——设了「提前 30 分钟」的话，
+                        // 模板要是取到点时刻，那提前量就白设了。
+                        // 也不带「完成 / 延后」按钮：一条天天响的提醒没有「完成一次」这回事。
+                        try await NotificationService.scheduleRepeating(
+                            identifier: Self.notificationPrefix + entry.item.id,
+                            title: entry.item.title,
+                            body: entry.item.notificationBody,
+                            rule: entry.item.repeatRule,
+                            at: base,
+                            category: nil)
+                    } else {
+                        try await NotificationService.schedule(identifier: Self.notificationPrefix + entry.item.id,
+                                                               title: entry.item.title,
+                                                               body: entry.item.notificationBody,
+                                                               at: entry.fire,
+                                                               category: Self.categoryIdentifier)
+                    }
+                } catch {
+                    AppLog.warn("Item", "通知没排上「\(entry.item.title)」：\(error.localizedDescription)")
+                }
             }
             AppLog.info("Item", "重排通知 \(plan.count) 条" + (skipped > 0 ? "（还有 \(skipped) 条超出系统的待弹上限，等前面弹完再排）" : ""))
         }
