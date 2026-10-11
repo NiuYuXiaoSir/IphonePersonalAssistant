@@ -127,6 +127,54 @@ struct AIResult {
 /// 这是整个 App 里最需要反复调的部分，所以 prompt 写成常量集中放，方便单独改。
 enum AIStructurer {
 
+    /// 「整理未完成事项」的系统提示词。和抽取那条分开：
+    /// 这条路**只输出一段话**，不许它建条目、也不许它写记忆。
+    ///
+    /// 为什么单独一条：那份材料（已经筛好的清单）本身就在库里了，
+    /// 让它再抽一遍条目只会重复建——而且用户要的是「一句话给我讲清我落了什么」，
+    /// 不是又一批卡片。
+    static let organizePrompt = """
+    你是一个中文私人助理。用户请你把「还没完成的事」整理出来给他看。
+
+    给你的材料是**本地数据库按时间范围筛出来的原始记录**，只有这三类：
+    - 安排：到点了还没打勾的（待办 / 日程 / 提醒）
+    - 安排：没设时间、一直挂着的
+    - 记忆：用户以前写着「打算做」、但看不出做完的
+
+    规则：
+    1. 输出一份好读的清单，**按最该先办的排前面**：逾期越久、越明确有时刻的排前面；没时间的排后面。
+    2. 每条一句话，说清是什么事、原定什么时候、已经过了多久（只有带时刻的才有）。
+    3. 明显是同一件事的（计划里写了一遍、安排里也建了一条）合并成一条，不要重复列。
+    4. 结尾一句收口：一共几件、最要紧的是哪件。不要客套话，也不要「保持效率」这种空话。
+    5. 只写材料里有的东西，**绝不编造**条目、时间、人名。材料是空的就说「这段时间没有未完成的事项」。
+    6. 只输出 JSON：{"reply":"你整理好的那段话"}。不要 markdown 代码块，不要前后缀文字。
+    """
+
+    /// 把本地筛好的清单交给模型整理成人话。
+    /// 只回一段文字（不做抽取），所以走独立的 prompt 和解码，不碰 decode 那套条目逻辑。
+    static func organize(material: String, rangeText: String, config: LLMConfig) async throws -> String {
+        let input = "时间范围：\(rangeText)\n\n【筛出来的原始记录】\n\(material)"
+        AppLog.info("AI", "开始整理未完成事项，范围 \(rangeText)，材料 \(material.count) 字")
+        let client = OpenAICompatibleClient(config: config)
+        let raw = try await client.chat([.system(organizePrompt), .user(input)], jsonMode: true)
+        AppLog.info("AI", "整理返回 \(raw.count) 字")
+        return try decodeReply(raw)
+    }
+
+    /// 从返回里取出那段话。要的是 JSON 里的 reply，但网关不一定听话，
+    /// 所以退一步：整段是正文就直接用（绝不因为格式把内容吞掉）。
+    static func decodeReply(_ raw: String) throws -> String {
+        let cleaned = stripCodeFence(raw)
+        if let obj = jsonObject(from: cleaned),
+           let reply = (obj["reply"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !reply.isEmpty {
+            return reply
+        }
+        let text = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty && !text.hasPrefix("{") { return text }
+        throw LLMError.decoding("模型没给出整理结果，原文：\(cleaned.prefix(200))")
+    }
+
     /// 抽取用的系统提示词。改这里就能调整抽取行为，不用碰界面代码。
     static let systemPrompt = """
     你是一个中文私人助理，同时负责从用户的话里抽取可执行条目。用户会交待要做的事、说刚做完的事、发照片、问问题。每一轮你都要做完三件事，然后只输出一个 JSON，不要解释，不要 markdown 代码块，不要前后缀文字：

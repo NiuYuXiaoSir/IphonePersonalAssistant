@@ -16,6 +16,8 @@ struct TodayView: View {
 
     @State private var path = NavigationPath()
     @State private var showRecorder = false
+    /// 「查未完成的事项」那张表
+    @State private var showUnfinished = false
     @State private var toast = ""
     /// 刚打勾的那条计划 + 它对应的流水（5 秒撤销窗口里用）
     @State private var undoDoneTarget: (plan: MemoryLog, done: MemoryLog)?
@@ -46,6 +48,13 @@ struct TodayView: View {
             }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    // 一键查未完成：选一段时间，本地先筛、再让助理整理成一段话
+                    Button {
+                        showUnfinished = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel("查未完成的事项")
                     if balance.supports(settings) { balanceChip }
                     Button {
                         router.showQuickAdd = true
@@ -55,6 +64,7 @@ struct TodayView: View {
                     .accessibilityLabel("记一条")
                 }
             }
+            .sheet(isPresented: $showUnfinished) { UnfinishedQueryView() }
             .fullScreenCover(isPresented: $showRecorder) { RecordView() }
             .sensoryFeedback(.success, trigger: hapticSuccess) { _, _ in settings.hapticsEnabled }
             .sensoryFeedback(.warning, trigger: hapticWarning) { _, _ in settings.hapticsEnabled }
