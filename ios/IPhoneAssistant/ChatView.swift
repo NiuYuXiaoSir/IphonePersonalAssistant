@@ -1319,16 +1319,19 @@ private struct ItemsCard: View {
                         .lineLimit(3)
                 }
 
-                // 没存下的原因写在原地：用户在这儿改一下时间就会自动再存一次
+                // 没存下的原因写在原地：用户在这儿改一下时间就会自动再存一次。
+                // 橙色只做强调（图标），正文用主色——橙字在白底上不到 4.5:1（§12.2 同类问题），
+                // 而且「没存下」这件事要靠这句话本身说清楚，不靠颜色（§12.1 不能只靠颜色）
                 if let reason = item.wrappedValue.saveError {
                     HStack(alignment: .top, spacing: 5) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .padding(.top, 1)
                         Text(reason)
                             .font(.caption)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    .foregroundStyle(.orange)
                 }
             }
             .opacity(item.wrappedValue.include ? 1 : 0.55)
@@ -1381,7 +1384,9 @@ private struct ItemsCard: View {
                     .font(.caption2)
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            // 竖着补到 28 pt：HIG 的最小可点区域是 28×28（默认 44×44），
+            // 这枚胶囊太小的话点不准（横向靠文字本身够宽）
+            .padding(.vertical, 5)
             .background(Color.accentColor.opacity(0.15), in: Capsule())
             .foregroundStyle(Color.accentColor)
         }

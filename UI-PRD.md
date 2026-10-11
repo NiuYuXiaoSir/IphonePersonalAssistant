@@ -1068,7 +1068,7 @@ HIG 要求：一句话说清**拿这个权限干什么**，主动语态、具体
 | 结果写在原地，不弹提示 | **Alerts**：「**Avoid using an alert merely to provide information.** People don't appreciate an interruption from an alert that's informative, but not actionable. If you need to provide only information, prefer finding an alternative way to communicate it within the relevant context」 | 「已存下 N 条 / 没存下的原因」写在卡片和那一行上，不用 Alert 报成功（和 §12.1 的「弹窗不能当提示用」同一条） |
 | 「全部撤下」不做二次确认 | **Alerts**：同上面那条「Avoid displaying alerts for common, undoable actions… they can undo the action」 | 这个按钮本身就是可逆的（「全部加回」把条目按卡片上的内容重新建回来），再加一层确认等于多打断一次 |
 
-**改动前用 MCP 查、改动后按同一批条款复查**：可量化三项的结论是——44×44 热区（本批新增的三处圈全部 44×44；`AGENTS.md` 里那条「先查后写」照做）、对比度（新文案全部走系统语义色 + `.secondary`，没有自绘色）、Dynamic Type（新增文案都用系统文本样式，圈用 `.title3` 随字体缩放）。
+**改动前用 MCP 查、改动后按同一批条款复查**：可量化三项的结论见 §15.5（收工那次：三处圈全部 44×44、失败原因的正文字用主色而不是 2.3:1 的橙字、新增文字都用系统文本样式）。
 
 > 附注（不冒充标准）：`UNCalendarNotificationTrigger` 这一档 API 在本机 `apple-dev` 服务端的**技术文档索引里没有收录**（`search_technical_documentation` 查不到 UserNotifications 的符号；同一查询查 `ScrollView` 正常返回，所以不是检索坏了）。这条 API 的用法是按 UserNotifications 的既有约定写的，**未能在本次会话里核对到官方原文**——真机要确认「每天 8 点时能不能连响三天」。
 
@@ -1088,4 +1088,17 @@ HIG 要求：一句话说清**拿这个权限干什么**，主动语态、具体
 | 重复提醒在锁屏上的「今天不再提醒」 | 需要 App 在后台被通知动作唤醒后改状态并重排，属于下一档（先不做按钮，比做一个不管用的按钮好） |
 | 真机确认：重复通知连响几天 | 见 15.2 末尾的附注——工具链里没有这条 API 的原文，模拟器/真机各挂一条「每天」的提醒看三天 |
 | 「今天要做」的圈会把计划挪进流水，而不是仅仅打勾 | 记忆库里「计划」和「做了」是同一张流水表的两种 kind，所以打勾 = 换 kind。好处是模型下次回答「今天做了什么」能看到它；代价是它不再出现在「今天要做」——这正是想要的 |
+
+### 15.5 收工复查（同一份 HIG 内容对照最终实现）
+
+改完又用 `search_human_interface_guidelines("accessibility")` 把最终实现过了一遍，三类可量化的：
+
+| 项 | HIG 原文 | 本批的落点 | 结论 |
+|---|---|---|---|
+| 44×44 热区 | Accessibility：「Platform Default control size… i OS: **44 x 44 pt**… Minimum control size: **28 x 28 pt**」 | 新增的三个「圈」（今日页计划、今日页待弹提醒、对话卡片）都是 `frame(width: 44, height: 44)` + `contentShape(Rectangle())`；对话卡片上那枚「响一下 · 每天」胶囊竖着补到 28 pt（横向靠文字够宽） | 达标（圈 44×44，胶囊 ≥28） |
+| 对比度 | Accessibility：「Up to 17 pts All **4.5:1**」；「**Prefer system-defined colors.** These colors have their own accessible variants that automatically adapt… Increase Contrast」 | 新文案全走系统语义色：正文 `.primary`、说明 `.secondary`；「没存下」的橙**只给图标**——橙字在浅色底上约 2.3:1，正文照样得让人读得清（这句还靠文字本身说清了失败原因，不靠颜色） | 达标（正文 ≥4.5:1；橙色仅作强调） |
+| Dynamic Type | Accessibility：「give people the option to enlarge text by **at least 200 percent**」；Typography：iOS 默认 17 pt、最小 11 pt | 新增文字一律系统文本样式（`.body`/`.footnote`/`.caption`），图标用 `.title3`/`.caption`（跟随缩放），没有写死 size；重复条目的「每天 08:00」是文字不是图片 | 达标 |
+| 不能只靠颜色 | Accessibility/Color：「Offer visual indicators, like distinct shapes or icons, in addition to color」「Avoid relying solely on color」 | 「重复」除了蓝色循环箭头，还写着「每天 08:00…一直提醒」；打勾后那行**换区**（今天要做 → 今天的流水）而不只是变色 | 达标 |
+
+对比度只做了「系统语义色 + 不算自绘值」这层核对：本批没有引入任何自定义颜色，浅/深两套观感由系统的语义色负责（§12.2 的那套实测只针对已弃用的自绘色板）。**真机上还要看一眼**：Increase Contrast 打开后橙图标与浅底的关系。
 

@@ -199,7 +199,8 @@ struct TodayView: View {
                             Image(systemName: "circle")
                                 .font(.title3)
                                 .foregroundStyle(.secondary)
-                                .frame(width: 44, height: 44, alignment: .top)
+                                // 圈看着小，热区按 HIG 补到 44×44；圈本身与第一行文字垂直居中
+                                .frame(width: 44, height: 44)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -215,7 +216,7 @@ struct TodayView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .padding(.vertical, 12)
+                        .padding(.top, 11)
                     }
                 }
             } header: {
@@ -359,7 +360,8 @@ struct TodayView: View {
                 Image(systemName: "circle")
                     .font(.title3)
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44, alignment: .top)
+                    // 44×44 的热区（HIG：iOS 默认 44×44），圈与第一行文字垂直居中
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -373,7 +375,8 @@ struct TodayView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, item.kind == .note || item.isRepeating ? 2 : 11)
+        .padding(.top, item.kind == .note || item.isRepeating ? 3 : 11)
+        .padding(.bottom, 2)
     }
 
     /// 时间那行。重复的条目写「每天 08:00」而不是「明天 08:00」——
