@@ -1111,7 +1111,7 @@ struct ChatView: View {
     ///
     /// 模型带回来的 `existing_item_id` 能对上库里哪一行时，走的是**改**那一行：
     /// 用户说「第二条改成周五」，模型会把整份清单重列一遍，那几条是改不是新建。
-    private func save(itemID: String, entryID id: String, announce: Bool = true) {
+    private func save(itemID: UUID, entryID id: String, announce: Bool = true) {
         guard var item = entry(id)?.items?.first(where: { $0.id == itemID }) else { return }
         guard item.include else { return }
 
@@ -1143,7 +1143,7 @@ struct ChatView: View {
     }
 
     /// 卡片上的圈：勾上就建，撤下就从「安排」里删掉（还能再勾回来）
-    private func toggleInclude(itemID: String, entryID id: String) {
+    private func toggleInclude(itemID: UUID, entryID id: String) {
         guard var item = entry(id)?.items?.first(where: { $0.id == itemID }) else { return }
         item.include.toggle()
         if item.include {
@@ -1223,7 +1223,7 @@ struct ChatView: View {
         }
     }
 
-    private func saveError(_ message: String?, itemID: String, entryID id: String) {
+    private func saveError(_ message: String?, itemID: UUID, entryID id: String) {
         guard var item = entry(id)?.items?.first(where: { $0.id == itemID }) else { return }
         item.saveError = message
         updateItem(item, entryID: id)
@@ -1249,7 +1249,7 @@ private struct ItemsCard: View {
 
     @Binding var items: [ParsedItem]
     /// 点某一条左边的圈：存下 / 撤下
-    let onToggle: (String) -> Void
+    let onToggle: (UUID) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
